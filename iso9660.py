@@ -1,3 +1,4 @@
+import os
 from enum import Enum, Flag, auto
 from filestream import Imagestream
 from sector import Submodes
@@ -248,8 +249,8 @@ class ISOImage():
                     result,prev1,prev2 = block.ReadPCM(prev1, prev2) 
                     pcms.extend(result)
                 if (sh.Submode & Submodes.EOR):
-                    filename = destination + '/' if destination else ''
-                    filename += "track" + "%02d" % filecounter + ".wav" 
+                    destination = "output" if destination is None else destination
+                    filename = os.path.join(os.getcwd(), destination, "track" + "%02d" % filecounter + ".wav")
                     wavefile = wave.open(filename, "wb")
                     wavefile.setparams((1, 2, 44100, len(pcms),"NONE","not compressed"))
                     frames = pack(str(len(pcms)) + "h", *pcms)
@@ -261,6 +262,56 @@ class ISOImage():
                     filecounter +=1
             sectorId +=1
             sh = self.__imagestream.Sectors[sectorId]
+
+    def ReadVideo(self, record: DirectoryRecord, destination=None):
+        sectorId = record.ExtentLocation
+        filecounter = 0
+        bytes = bytearray()
+        sh = self.__imagestream.Sectors[sectorId]
+        while not (sh.Submode & Submodes.EOF):
+            if not (sh.Submode & Submodes.Audio):
+                s = self.__imagestream.ReadSector(sectorId)
+                bytes += s.Data
+                if (sh.Submode & Submodes.EOR):
+                    destination = "output" if destination is None else destination
+                    filename = os.path.join(os.getcwd(), destination, "track" + "%02d" % filecounter + ".j2k")
+                    with open(filename, "wb") as o:
+                        o.write(bytes)
+                        bytes = bytearray()
+                        filecounter += 1
+            sectorId += 1
+            sh = self.__imagestream.Sectors[sectorId]
+
+
+    def ReadVideoFrames(self, record: DirectoryRecord, destination=None):
+        sectorId = record.ExtentLocation
+        filecounter = 0
+        framecounter = 0
+        bytes = bytearray()
+        sh = self.__imagestream.Sectors[sectorId]
+        while not (sh.Submode & Submodes.EOF):
+            if not (sh.Submode & Submodes.Audio):
+                s = self.__imagestream.ReadSector(sectorId)
+                if s.Data[0] == 0xF3:
+                    pass
+                elif s.Data[0] == 0xF2:
+                    bytes += s.Data
+                    destination = "output" if destination is None else destination
+                    filename = os.path.join(os.getcwd(), destination, "track_%02d_frame_%03d" % (filecounter,framecounter))
+                    with open(filename, "wb") as o:
+                        o.write(bytes)
+                    bytes = bytearray()
+                    framecounter += 1
+                else:
+                    bytes += s.Data
+                if (sh.Submode & Submodes.EOR):
+                    filecounter += 1
+                    framecounter = 0
+                    if filecounter > 3:
+                        break
+            sectorId += 1
+            sh = self.__imagestream.Sectors[sectorId]
+
 
     @property
     def VolumeDescriptors(self):
