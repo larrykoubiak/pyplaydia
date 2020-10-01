@@ -274,7 +274,7 @@ class ISOImage():
                 bytes += s.Data
                 if (sh.Submode & Submodes.EOR):
                     destination = "output" if destination is None else destination
-                    filename = os.path.join(os.getcwd(), destination, "track" + "%02d" % filecounter + ".j2k")
+                    filename = os.path.join(os.getcwd(), destination, "track" + "%02d" % filecounter + ".mpg")
                     with open(filename, "wb") as o:
                         o.write(bytes)
                         bytes = bytearray()
