@@ -1,6 +1,21 @@
 from heapq import heappop, heappush
 from graphviz import Graph
 
+class BitBuffer:
+    def __init__(self):
+        self.values = bytearray()
+        self.__buffer = 0
+        self.__pos = 0
+
+    def push(self, bit):
+        self.__buffer <<= 1
+        self.__buffer |= bit
+        self.__pos += 1
+        if self.__pos == 8:
+            self.values.append(self.__buffer)
+            self.__buffer = 0
+            self.__pos = 0
+
 class HuffmanNode:
     def __init__(self, val, freq):
         self.value = val
@@ -27,6 +42,8 @@ class HuffmanNode:
 class Huffman:
     def __init__(self, input_string = None):
         self.root = None
+        self.codes = {}
+        self.reverse_codes = {}
         if input_string is not None:
             self.__buildtree(input_string)
     
@@ -48,6 +65,27 @@ class Huffman:
             merged.right = node2
             heappush(heap, merged)
         self.root = heap[0]
+        code = ""
+        self.__traversetree(self.root, code)
+
+    def __traversetree(self, node, code):
+        if node is None:
+            return
+        if node.IsLeaf():
+            self.codes[node.value] = code
+            self.reverse_codes[code] = node.value
+            return
+        self.__traversetree(node.left, code + "0")
+        self.__traversetree(node.right, code + "1")
+
+    def Encode(self, string):
+        buffer = BitBuffer()
+        for c in string:
+            code = self.codes[c]
+            for d in code:
+                buffer.push(int(d))
+        return buffer.values
+
 
     def DrawTree(self, parent=None, graph=None):
         node = self.root if parent is None else parent
@@ -66,7 +104,18 @@ class Huffman:
     def Root(self):
         return self.root
 
+    @property
+    def Codes(self):
+        return self.codes
+
+    @property
+    def ReverseCodes(self):
+        return self.reverse_codes
 
 if __name__ == "__main__":
-    h = Huffman("ADA ATE AN APPLE")
-    h.DrawTree()
+    message = "ADA ATE AN APPLE"
+    print(message)
+    h = Huffman(message)
+    print(h.codes)
+    encoded_message = h.Encode(message)
+    print(' '.join(format(b, '08b') for b in encoded_message))
