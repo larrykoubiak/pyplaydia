@@ -3,7 +3,7 @@ from graphviz import Graph
 
 class BitBuffer:
     def __init__(self):
-        self.values = bytearray()
+        self.__values = bytearray()
         self.__buffer = 0
         self.__pos = 0
 
@@ -12,9 +12,17 @@ class BitBuffer:
         self.__buffer |= bit
         self.__pos += 1
         if self.__pos == 8:
-            self.values.append(self.__buffer)
+            self.__values.append(self.__buffer)
             self.__buffer = 0
             self.__pos = 0
+    
+    @property
+    def Values(self):
+        values = self.__values
+        if self.__pos > 0:
+            buffer = self.__buffer << (8 - self.__pos)
+            values.append(buffer)
+        return values
 
 class HuffmanNode:
     def __init__(self, val, freq):
@@ -84,7 +92,7 @@ class Huffman:
             code = self.codes[c]
             for d in code:
                 buffer.push(int(d))
-        return buffer.values
+        return buffer.Values
 
 
     def DrawTree(self, parent=None, graph=None):
@@ -114,8 +122,10 @@ class Huffman:
 
 if __name__ == "__main__":
     message = "ADA ATE AN APPLE"
+    t = int()
     print(message)
     h = Huffman(message)
     print(h.codes)
     encoded_message = h.Encode(message)
     print(' '.join(format(b, '08b') for b in encoded_message))
+    print(' '.join(format(b, '02X') for b in encoded_message))
