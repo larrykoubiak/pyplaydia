@@ -145,13 +145,13 @@ class Huffman:
     def DrawTree(self, parent=None, graph=None):
         node = self.root if parent is None else parent
         graph = Graph() if graph is None else graph
-        graph.node(node.value, "'" + node.value + "'" if node.IsLeaf() else '')
+        graph.node('%02X' % node.value, '%02X' % node.value if node.IsLeaf() else '')
         if node.left is not None:
             self.DrawTree(node.left, graph)
-            graph.edge(node.value, node.left.value, "0")
+            graph.edge('%02X' % node.value, '%02X' % node.left.value, "0")
         if node.right is not None:
             self.DrawTree(node.right, graph)
-            graph.edge(node.value, node.right.value, "1")
+            graph.edge('%02X' % node.value, '%02X' % node.right.value, "1")
         if node == self.root:
             graph.render('output/test.gv', format="png",view=True)
     
@@ -179,3 +179,4 @@ if __name__ == "__main__":
     print(' '.join(format(b, '02X') for b in encoded_message))
     decoded_message = h.Decode(encoded_message).decode()
     print(decoded_message)
+    h.DrawTree()
