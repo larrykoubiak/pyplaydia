@@ -1,5 +1,6 @@
 from enum import Enum, Flag
 from struct import pack, unpack
+from huffman import Huffman
 
 
 class JPEGDensityUnit(Enum):
@@ -40,6 +41,7 @@ class JPEGSegment(Enum):
     DHP = 0x1E
     EXP = 0x1F
     APP = 0x20
+    COM = 0x3E
 class QuantizationType(Enum):
     PRECISION8 = 0x00
     PRECISION16 = 0x01
@@ -126,6 +128,7 @@ class HuffmanTable():
         self.Id = bytes[0] & 0x0F
         self.TableType = HuffmanTableType(bytes[0] >> 4)
         self.Codes = {}
+        self.Huffman = Huffman()
         index = 1
         code = 0
         counts = []
@@ -138,11 +141,14 @@ class HuffmanTable():
                 code +=1
                 index += 1
             code <<= 1
+        self.Huffman.FromTable(self.Codes)
+        self.Huffman.DrawTree(filename="{}_{}".format(self.TableType, self.Id))
     
     def __repr__(self):
         result = "Table {:02X} Type {}".format(self.Id, self.TableType)
         # for k, v in self.Codes.items():
-        #     result += "\n{:02b} at length {} = {:02X}".format(k[1],k[0],v)
+        #     formatstr = "\n{:0" + str(k[0]) + "b} at length {} = {:02X}" 
+        #     result += formatstr.format(k[1],k[0],v)
         return result
 
 class ScanComponent():

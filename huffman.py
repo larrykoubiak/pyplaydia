@@ -52,7 +52,7 @@ class BitBuffer:
         self.__values = value
 
 class HuffmanNode:
-    def __init__(self, val, freq):
+    def __init__(self, val = None, freq = None):
         self.value = val
         self.freq = freq
         self.left = None
@@ -104,6 +104,27 @@ class Huffman:
         code = ""
         self.__traversetree(self.root, code)
 
+    def FromTable(self, table):
+        self.root = HuffmanNode(0)
+        for k, v in table.items():
+            node = self.root
+            freq = 255
+            ln = k[0]
+            code = "{:0" + str(ln) +"b}"
+            code = code.format(k[1])
+            for i in range(ln):
+                b = code[i]
+                if b == "0":
+                    if node.left is None:
+                        node.left = HuffmanNode()
+                    node = node.left
+                elif b == "1":
+                    if node.right is None:
+                        node.right = HuffmanNode()
+                    node = node.right
+            node.value = v
+
+
     def __traversetree(self, node, code):
         if node is None:
             return
@@ -142,18 +163,18 @@ class Huffman:
             b = buffer.pop()
         return decvals
     
-    def DrawTree(self, parent=None, graph=None):
+    def DrawTree(self, parent=None, graph=None, code = "", filename="test.gv"):
         node = self.root if parent is None else parent
         graph = Graph() if graph is None else graph
-        graph.node('%02X' % node.value, '%02X' % node.value if node.IsLeaf() else '')
+        graph.node("Root" if code =="" else code, '%02X' % node.value if node.IsLeaf() else '')
         if node.left is not None:
-            self.DrawTree(node.left, graph)
-            graph.edge('%02X' % node.value, '%02X' % node.left.value, "0")
+            self.DrawTree(node.left, graph, code + "0")
+            graph.edge("Root" if code =="" else code, code + "0", "0")
         if node.right is not None:
-            self.DrawTree(node.right, graph)
-            graph.edge('%02X' % node.value, '%02X' % node.right.value, "1")
-        if node == self.root:
-            graph.render('output/test.gv', format="png",view=True)
+            self.DrawTree(node.right, graph, code + "1")
+            graph.edge("Root" if code =="" else code, code + "1", "1")
+        if parent is None:
+            graph.render('output/' + filename, format="png",view=True)
     
     @property
     def Root(self):
