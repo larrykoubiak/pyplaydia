@@ -1,7 +1,9 @@
 from enum import Enum, Flag
 from struct import pack, unpack
-from huffman import Huffman
-
+from huffman import Huffman, BitBuffer
+import numpy as np
+from scipy.fftpack import idct
+from PIL import Image
 
 class JPEGDensityUnit(Enum):
     NONE = 0x00
@@ -85,7 +87,9 @@ class QuantizationTable():
         self.Data = bytes[1:]
 
     def __repr__(self):
-        result = "Table {:02X} Type {}".format(self.Id, self.TableType)
+        result = "Table {:02X} Type {}".format(self.Id, self.TableType) + "\n"
+        for i in range(8):
+            result += "".join("{: <4d}".format(b) for b in self.Data[i*8:(i*8)+8]) + "\n"
         return result
 
 class FrameComponent():
@@ -142,7 +146,7 @@ class HuffmanTable():
                 index += 1
             code <<= 1
         self.Huffman.FromTable(self.Codes)
-        self.Huffman.DrawTree(filename="{}_{}".format(self.TableType, self.Id))
+        # self.Huffman.DrawTree(filename="{}_{}".format(self.TableType, self.Id))
     
     def __repr__(self):
         result = "Table {:02X} Type {}".format(self.Id, self.TableType)
@@ -188,11 +192,15 @@ class JPEGFile():
         self.DCHuffmanTables = []
         self.ACHuffmanTables = []
         self.__fs = None
+        self.__flen = 0
         if filename is not None:
             self.__parseFile(filename)
 
     def __parseFile(self, filename):
         self.__fs = open(filename, 'rb')
+        self.__fs.seek(0,2)
+        self.__flen = self.__fs.tell()
+        self.__fs.seek(0,0)
         code = self.__fs.read(2)
         if code[0] != 0xFF:
             print("Invalid segment")
@@ -230,7 +238,7 @@ class JPEGFile():
                 data = self.__fs.read(length)
                 self.__sos = StartOfScan(data)
                 print(self.__sos)
-                self.__fs.seek(-2, 2)
+                self.Decode()                
             elif segid == JPEGSegment.EOI:
                 print("End of Image")
             else:
@@ -238,6 +246,62 @@ class JPEGFile():
                 print("%s size %d" % (str(segid), length))
                 self.__fs.seek(length, 1)
             code = self.__fs.read(2)
+    
+    def Decode(self):
+        datalength = self.__flen - self.__fs.tell() - 2
+        data = self.__fs.read(datalength)
+        buffer = BitBuffer(data)
+        prevDCs = {t: 0 for t in self.__sos.Components}
+        MCUs = []
+        while not buffer.EOF:
+            MCU = {}
+            for ctype, component in self.__sos.Components.items():
+                DCTable = self.DCHuffmanTables[component.HuffmanDCTable]
+                lnDC = DCTable.Huffman.DecodeChar(buffer)
+                if lnDC is None:
+                    break
+                MCU[ctype] = [0] * 64
+                if lnDC == 0:
+                    valDC = 0
+                else:
+                    valDC = buffer.readbits(lnDC)
+                    if valDC & (1 << (lnDC-1)) == 0:
+                        valDC = valDC - (1 << lnDC)
+                valDC += prevDCs[ctype]
+                MCU[ctype][0] = valDC
+                prevDCs[ctype] = valDC
+                ACTable = self.ACHuffmanTables[component.HuffmanACTable]
+                for i in range(63):
+                    valAC = ACTable.Huffman.DecodeChar(buffer)
+                    if valAC == 0:
+                        break ## Zero Run
+                    MCU[ctype][i+1] = valAC
+                qtable = self.__quantizationtables[self.__sof.Components[ctype].QuantizationId]
+                for i in range(64):
+                    MCU[ctype][i] *= qtable.Data[i]
+                MCU[ctype] = idct(MCU[ctype], norm="ortho")
+                for i in range(64):
+                    MCU[ctype][i] += 128
+            if MCU:
+                MCUs.append(MCU)
+        imagedata = bytearray()
+        for y in range(self.__sof.Height):
+            for x in range(self.__sof.Width):
+                mcuID = int(((y//8)*(self.__sof.Width / 8)) + (x//8))
+                m = MCUs[mcuID]
+                dx = x % 8
+                dy = y % 8
+                i = (dy * 8) + dx
+                Y, Cb, Cr = (m['Y'][i], m['Cb'][i], m['Cr'][i])
+                r = max(0,min(int(Y + 1.402 * (1.0 * Cr - 128.0)),255))
+                g = max(0,min(int(Y - 0.344136 * ( 1.0 * Cb  - 128.0) - 0.714136 * ( 1.0 * Cr - 128.0)),255))
+                b = max(0,min(int(Y + 1.772 * ( 1.0 * Cb  - 128.0)),255))
+                imagedata.append(r)
+                imagedata.append(g)
+                imagedata.append(b)
+        image = Image.frombytes("RGB", (self.__sof.Width, self.__sof.Height), bytes(imagedata))
+        image.show()
+        self.__fs.seek(-2, 2)
 
 
 if __name__ == "__main__":

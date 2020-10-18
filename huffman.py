@@ -1,9 +1,8 @@
 from heapq import heappop, heappush
-from graphviz import Graph
-
+from graphviz import Graph, Digraph
 class BitBuffer:
-    def __init__(self):
-        self.__values = bytearray()
+    def __init__(self, values=None):
+        self.__values = bytearray() if values is None else values
         self.__buffer = 0
         self.__pos = 0
         self.__index = 0
@@ -37,6 +36,18 @@ class BitBuffer:
             else:
                 return None
         return self.__buffer & 0x01
+
+    def readbits(self, nbbits):
+        val = 0
+        for _ in range(nbbits):
+            b = self.pop()
+            val <<= 1
+            val |= b
+        return val
+
+    @property
+    def EOF(self):
+        return self.__index >= len(self.__values)
     
     @property
     def Values(self):
@@ -108,7 +119,6 @@ class Huffman:
         self.root = HuffmanNode(0)
         for k, v in table.items():
             node = self.root
-            freq = 255
             ln = k[0]
             code = "{:0" + str(ln) +"b}"
             code = code.format(k[1])
@@ -147,32 +157,38 @@ class Huffman:
                 buffer.push(int(d))
         return buffer.Values
     
-    def Decode(self, values):
-        buffer = BitBuffer()
-        buffer.Values = values
-        b = buffer.pop()
-        node = self.root
+    def DecodeString(self, buffer):
         decvals = bytearray()
-        while b is not None:
-            node = node.left if b == 0 else node.right
-            if node.IsLeaf():
-                if node.value == 0xFF:
-                    break
-                decvals.append(node.value)
-                node = self.root
-            b = buffer.pop()
+        val = self.DecodeChar(buffer)
+        while val is not None:
+            decvals.append(val)
+            val = self.DecodeChar(buffer)
         return decvals
+    
+    def DecodeChar(self, buffer):
+        node = self.root
+        while node is not None and not node.IsLeaf() and not buffer.EOF:
+            b = buffer.pop()
+            node = node.left if b == 0 else node.right
+        return None if node is None or node.value == 0xFF else node.value
+
     
     def DrawTree(self, parent=None, graph=None, code = "", filename="test.gv"):
         node = self.root if parent is None else parent
-        graph = Graph() if graph is None else graph
+        if graph is None:
+            graph = Graph(engine="dot")
+        else:
+            graph = graph
         graph.node("Root" if code =="" else code, '%02X' % node.value if node.IsLeaf() else '')
         if node.left is not None:
             self.DrawTree(node.left, graph, code + "0")
-            graph.edge("Root" if code =="" else code, code + "0", "0")
+            graph.edge(("Root" if code =="" else code), code + "0", "0")
+        if node.left is not None and node.right is not None:
+            graph.node(code + "_","",style="invis",width=".1")
+            graph.edge(("Root" if code =="" else code), code + "_",style="invis")
         if node.right is not None:
             self.DrawTree(node.right, graph, code + "1")
-            graph.edge("Root" if code =="" else code, code + "1", "1")
+            graph.edge(("Root" if code =="" else code), code + "1", "1")
         if parent is None:
             graph.render('output/' + filename, format="png",view=True)
     
@@ -198,6 +214,6 @@ if __name__ == "__main__":
     encoded_message = h.Encode(message)
     print(' '.join(format(b, '08b') for b in encoded_message))
     print(' '.join(format(b, '02X') for b in encoded_message))
-    decoded_message = h.Decode(encoded_message).decode()
+    decoded_message = h.DecodeString(BitBuffer(encoded_message)).decode()
     print(decoded_message)
     h.DrawTree()
