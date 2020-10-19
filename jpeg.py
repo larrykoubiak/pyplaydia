@@ -256,6 +256,7 @@ class JPEGFile():
         while not buffer.EOF:
             MCU = {}
             for ctype, component in self.__sos.Components.items():
+                ## Huffman DC Decoding
                 DCTable = self.DCHuffmanTables[component.HuffmanDCTable]
                 lnDC = DCTable.Huffman.DecodeChar(buffer)
                 if lnDC is None:
@@ -270,12 +271,19 @@ class JPEGFile():
                 valDC += prevDCs[ctype]
                 MCU[ctype][0] = valDC
                 prevDCs[ctype] = valDC
+                ## Huffman AC Decoding
                 ACTable = self.ACHuffmanTables[component.HuffmanACTable]
-                for i in range(63):
+                valAC = ACTable.Huffman.DecodeChar(buffer)
+                index = 0
+                while valAC != 0:
+                    ## RLE decoding
+                    zerolen = valAC >> 4
+                    val = valAC & 0xF
+                    index += zerolen
+                    MCU[ctype][index+1] = val
+                    index += 1
                     valAC = ACTable.Huffman.DecodeChar(buffer)
-                    if valAC == 0:
-                        break ## Zero Run
-                    MCU[ctype][i+1] = valAC
+                
                 qtable = self.__quantizationtables[self.__sof.Components[ctype].QuantizationId]
                 for i in range(64):
                     MCU[ctype][i] *= qtable.Data[i]
