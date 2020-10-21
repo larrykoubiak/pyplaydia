@@ -190,7 +190,7 @@ class Huffman:
             self.DrawTree(node.right, graph, code + "1")
             graph.edge(("Root" if code =="" else code), code + "1", "1")
         if parent is None:
-            graph.render('output/' + filename, format="png",view=True)
+            graph.render('output/' + filename, format="png")
     
     @property
     def Root(self):
