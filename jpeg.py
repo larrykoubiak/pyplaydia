@@ -6,34 +6,14 @@ from scipy.fftpack import idct
 from PIL import Image
 from math import cos, pi, sqrt
 
-REVERSE_ZIGZAG = [
-    0,  1,  8, 16,  9,  2,  3, 10, 
-    17, 24, 32, 25, 18, 11,  4,  5,
-    12, 19, 26, 33, 40, 48, 41, 34, 
-    27, 20, 13,  6,  7, 14, 21, 28,
-    35, 42, 49, 56, 57, 50, 43, 36, 
-    29, 22, 15, 23, 30, 37, 44, 51,
-    58, 59, 52, 45, 38, 31, 39, 46, 
-    53, 60, 61, 54, 47, 55, 62, 63
-]
+FIX_PRECISION = 11
+FIX_2COS_PI_4_16 = int((2 * cos(pi * 4 / 16)) * (1 << FIX_PRECISION)) ## 1.4142135623730951
+FIX_2COS_PI_2_16 = int((2 * cos(pi * 2 / 16)) * (1 << FIX_PRECISION)) ## 1.8477590650225735
+FIX_1COS_PI_2_16 = int((1 / cos(pi * 2 / 16)) * (1 << FIX_PRECISION)) ## 1.082392200292394
+FIX_1COS_PI_6_16 = int((1 / cos(pi * 6 / 16)) * (1 << FIX_PRECISION)) ## 2.613125929752753
 
-REVERSE_ZIGZAG_M = [
-    (0,0),
-    (0,1), (1,0),         
-    (2,0), (1,1), (0,2),
-    (0,3), (1,2), (2,1), (3,0),
-    (4,0), (3,1), (2,2), (1,3), (0,4),
-    (0,5), (1,4), (2,3), (3,2), (4,1), (5,0),
-    (6,0), (5,1), (4,2), (3,3), (2,4), (1,5), (0,6),
-    (0,7), (1,6), (2,5), (3,4), (4,3), (5,2), (6,1), (7,0),
-    (7,1), (6,2), (5,3), (4,4), (3,5), (2,6), (1,7),
-    (2,7), (3,6), (4,5), (5,4), (6,3), (7,2),
-    (7,3), (6,4), (5,5), (4,6), (3,7),
-    (4,7), (5,6), (6,5), (7,4),
-    (7,5), (6,6), (5,7),
-    (6,7), (7,6),
-    (7,7)
-]
+def clamp(val, minval, maxval):
+    return max(minval,min(maxval,val))
 
 class JPEGDensityUnit(Enum):
     NONE = 0x00
@@ -115,16 +95,39 @@ class QuantizationTable():
         self.TableType = QuantizationType(bytes[0] >> 4)
         self.Id = bytes[0] & 0x0F
         self.Data = bytes[1:]
+        self.reverse_zigzag = [
+            0,  1,  8, 16,  9,  2,  3, 10, 
+            17, 24, 32, 25, 18, 11,  4,  5,
+            12, 19, 26, 33, 40, 48, 41, 34, 
+            27, 20, 13,  6,  7, 14, 21, 28,
+            35, 42, 49, 56, 57, 50, 43, 36, 
+            29, 22, 15, 23, 30, 37, 44, 51,
+            58, 59, 52, 45, 38, 31, 39, 46, 
+            53, 60, 61, 54, 47, 55, 62, 63
+        ]
+        self.Data = self.Unzigzag(self.Data)
+
+    def Unzigzag(self, input_array):
+        uz = [0] * 64
+        for i in range(64):
+            uz[self.reverse_zigzag[i]] = input_array[i]
+        # result = "Unzigzag Table {:02X} Type {}".format(self.Id, self.TableType) + "\n"
+        # for i in range(8):
+        #     result += "".join("{: <6d}".format(b) for b in uz[i*8:(i*8)+8]) + "\n"
+        # print(result)
+        return uz
 
     def Unquantize(self, input_array):
+        uq = [0] * 64
         for i in range(64):
-            input_array[i] *= self.Data[i]
-        return input_array
+            uq[i] = input_array[i] * self.Data[i]
+        return uq
 
     def __repr__(self):
         result = "Table {:02X} Type {}".format(self.Id, self.TableType) + "\n"
+        uz = self.Unzigzag(self.Data)
         for i in range(8):
-            result += "".join("{: <4d}".format(b) for b in self.Data[i*8:(i*8)+8]) + "\n"
+            result += "".join("{: <4d}".format(b) for b in uz[i*8:(i*8)+8]) + "\n"
         return result
 
 class FrameComponent():
@@ -182,12 +185,28 @@ class HuffmanTable():
             code <<= 1
         self.Huffman.FromTable(self.Codes)
         # self.Huffman.DrawTree(filename="{}_{}".format(self.TableType, self.Id))
+
+    def DumpCodes(self, parent = None, code="", codes=None):
+        node = self.Huffman.Root if parent is None else parent
+        if parent is None:
+            codes= {}
+        if node.IsLeaf():
+            codes[code] = node.value
+        else:
+            if node.left is not None:
+                self.DumpCodes(node.left, code+ "0", codes)
+            if node.right is not None:
+                self.DumpCodes(node.right, code+ "1", codes)
+        if parent is None:
+            for k,v in codes.items():
+                print("{};{};{};{}".format(self.TableType,self.Id,k,v))
     
+
     def __repr__(self):
         result = "Table {:02X} Type {}".format(self.Id, self.TableType)
-        # for k, v in self.Codes.items():
-        #     formatstr = "\n{:0" + str(k[0]) + "b} at length {} = {:02X}" 
-        #     result += formatstr.format(k[1],k[0],v)
+        for k, v in self.Codes.items():
+            formatstr = "\n{:0" + str(k[0]) + "b} at length {} = {:02X}" 
+            result += formatstr.format(k[1],k[0],v)
         return result
 
 class ScanComponent():
@@ -301,66 +320,63 @@ class JPEGFile():
                     valDC = 0
                 else:
                     valDC = buffer.readbits(lnDC)
-                    if valDC & (1 << (lnDC-1)) == 0:
-                        valDC = valDC - (1 << lnDC)
+                    if valDC < (1 << (lnDC-1)):
+                        valDC = valDC - (1 << lnDC) + 1
                 valDC += prevDCs[ctype]
                 temp_array[0] = valDC
                 prevDCs[ctype] = valDC
                 ## Huffman AC Decoding
                 ACTable = self.ACHuffmanTables[component.HuffmanACTable]
                 lnAC = ACTable.Huffman.DecodeChar(buffer)
-                index = 0
-                while lnAC != 0 and lnAC is not None:
+                index = 1
+                while index < 64:
                     ## RLE decoding
                     lnZero = lnAC >> 4
                     lnVal = lnAC & 0xF
                     index += lnZero
-                    if index > 62:
-                        break
+                    if lnZero == 0xF and lnVal == 0:
+                        index +=1
                     if lnVal != 0:
                         valAC = buffer.readbits(lnVal)
-                        temp_array[index+1] = valAC
-                    index += 1
+                        if valAC is None:
+                            break
+                        if valAC < (1 << (lnVal-1)):
+                            valAC = valAC - (1 << lnVal) + 1
+                        temp_array[index] = valAC
+                        index += 1
+                    else:
+                        break
                     lnAC = ACTable.Huffman.DecodeChar(buffer)
                 qtable = self.__quantizationtables[self.__sof.Components[ctype].QuantizationId]
-                unquantized = qtable.Unquantize(temp_array)
-                m = np.array([0] * 64).reshape(8, 8)
-                for i in range(64):
-                    coords = REVERSE_ZIGZAG_M[i]
-                    m[coords[0]][coords[1]] = unquantized[i]
-                idct_coeffs = np.array([0] * 64).reshape(8, 8)
-                for y in range(8):
-                    for x in range(8):
-                        sum = 0.0
-                        for u in range(8):
-                            for v in range(8):
-                                Cu = (1.0 / sqrt(2.0)) if u == 0 else 1.0
-                                Cv =  (1.0 / sqrt(2.0)) if v == 0 else 1.0
-                                sum += Cu * Cv * m[u][v] * cos(
-                                    (2 * x + 1) * u * pi / 16.0) * cos(
-                                    (2 * y + 1) * v * pi / 16.0)
-                        idct_coeffs[y][x] = 0.25 * sum
-                idct_coeffs += 128
+                temp_array = qtable.Unzigzag(temp_array)
+                temp_array = qtable.Unquantize(temp_array)
+                idct_coeffs = idct(temp_array,norm="ortho")
                 MCU[ctype] = idct_coeffs
-            if MCU:
+            if len(MCU) ==3:
                 MCUs.append(MCU)
-        imagedata = bytearray()
-        for y in range(self.__sof.Height):
-            for x in range(self.__sof.Width):
-                mx = x // 8
-                my = y // 8
-                mcuID = int((my * (self.__sof.Width / 8)) + mx)
-                m = MCUs[mcuID]
-                dx = x % 8
-                dy = y % 8
-                i = (dy * 8) + dx
-                Y, Cb, Cr = (m['Y'][dy][dx], m['Cb'][dy][dx], m['Cr'][dy][dx])
-                r = max(0,min(int(Y + 1.402 * (1.0 * Cr - 128.0)),255))
-                g = max(0,min(int(Y - 0.344136 * ( 1.0 * Cb  - 128.0) - 0.714136 * ( 1.0 * Cr - 128.0)),255))
-                b = max(0,min(int(Y + 1.772 * ( 1.0 * Cb  - 128.0)),255))
-                imagedata.append(r)
-                imagedata.append(g)
-                imagedata.append(b)
+        imagedata = bytearray(self.__sof.Height * self.__sof.Width * 3)
+        for my in range(self.__sof.Height // 8):
+            for mx in range(self.__sof.Width // 8):
+                mcuID = int((my * (self.__sof.Width // 8)) + mx)
+                if mcuID >= len(MCUs):
+                    imagedata.append(0)
+                    imagedata.append(0)
+                    imagedata.append(0)
+                else:
+                    m = MCUs[mcuID]
+                    for y in range(8):
+                        offset = (((my* 8) + y ) * self.__sof.Width * 3) + (mx * 8 * 3)
+                        for x in range(8):
+                            mi = (y * 8) + x
+                            Y, Cb, Cr = (m['Y'][mi] + 128,m['Cb'][mi], m['Cr'][mi])
+                            r = clamp(int(Y + 1.402 * Cr),0,255)
+                            g = clamp(int(Y - 0.34414 * Cb - 0.71414 * Cr),0,255)
+                            b = clamp(int(Y + 1.772 * Cb),0,255)
+                            imagedata[offset] = r
+                            imagedata[offset+1] = g
+                            imagedata[offset+2] = b
+                            offset += 3
+                # print("X: {} Y: {} R: {} G: {} B: {} Y': {} Cb: {} Cr: {}".format(x,y,r,g,b,Y,Cb,Cr))
         image = Image.frombytes("RGB", (self.__sof.Width, self.__sof.Height), bytes(imagedata))
         image.save('output/test.bmp', format="BMP")
         image.show()

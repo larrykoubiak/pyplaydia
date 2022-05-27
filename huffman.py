@@ -23,16 +23,16 @@ class BitBuffer:
         self.__pos += 1
         if self.__pos > 7:
             self.__pos = 0
-            self.__index += 1
             if self.__index < len(self.__values):
                 if self.__values[self.__index] == 0xFF:
-                    self.__index += 1
-                    if self.__values[self.__index] == 0x00:
-                        self.__index += 1
+                    if self.__values[self.__index+1] == 0x00:
+                        self.__index += 2
                     elif self.__values[self.__index] == 0xD9:
                         return None
                     else:
                         print("error")
+                else:
+                    self.__index += 1
             else:
                 return None
         return self.__buffer & 0x01
@@ -41,6 +41,8 @@ class BitBuffer:
         val = 0
         for _ in range(nbbits):
             b = self.pop()
+            if b is None:
+                return None
             val <<= 1
             val |= b
         return val
@@ -191,7 +193,7 @@ class Huffman:
             graph.edge(("Root" if code =="" else code), code + "1", "1")
         if parent is None:
             graph.render('output/' + filename, format="png")
-    
+
     @property
     def Root(self):
         return self.root
