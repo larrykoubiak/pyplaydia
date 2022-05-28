@@ -199,7 +199,7 @@ class HuffmanTable():
                 self.DumpCodes(node.right, code+ "1", codes)
         if parent is None:
             for k,v in codes.items():
-                print("{};{};{};{}".format(self.TableType,self.Id,k,v))
+                print("{};{};{};{:02X}".format(self.TableType,self.Id,k,v))
     
 
     def __repr__(self):
@@ -282,7 +282,7 @@ class JPEGFile():
                 length = unpack(">H", self.__fs.read(2))[0] - 2
                 data = self.__fs.read(length)
                 table = HuffmanTable(data)
-                print(table)
+                table.DumpCodes()
                 if table.TableType == HuffmanTableType.DC:
                     self.DCHuffmanTables.append(table)
                 elif table.TableType == HuffmanTableType.AC:
@@ -327,26 +327,25 @@ class JPEGFile():
                 prevDCs[ctype] = valDC
                 ## Huffman AC Decoding
                 ACTable = self.ACHuffmanTables[component.HuffmanACTable]
-                lnAC = ACTable.Huffman.DecodeChar(buffer)
                 index = 1
                 while index < 64:
                     ## RLE decoding
-                    lnZero = lnAC >> 4
-                    lnVal = lnAC & 0xF
-                    index += lnZero
-                    if lnZero == 0xF and lnVal == 0:
-                        index +=1
-                    if lnVal != 0:
-                        valAC = buffer.readbits(lnVal)
-                        if valAC is None:
-                            break
-                        if valAC < (1 << (lnVal-1)):
-                            valAC = valAC - (1 << lnVal) + 1
-                        temp_array[index] = valAC
-                        index += 1
-                    else:
-                        break
                     lnAC = ACTable.Huffman.DecodeChar(buffer)
+                    if lnAC is None or lnAC == 0:
+                        break
+                    else:
+                        lnZero = lnAC >> 4
+                        lnVal = lnAC & 0xF
+                        valAC = buffer.readbits(lnVal)
+                        if lnVal <= 0:
+                            valAC = 0
+                        else:
+                            index += lnZero
+                            if valAC < (1 << (lnVal-1)):
+                                valAC = valAC - (1 << lnVal) + 1
+                            if index < 64:
+                                temp_array[index] = valAC
+                    index += 1
                 qtable = self.__quantizationtables[self.__sof.Components[ctype].QuantizationId]
                 temp_array = qtable.Unzigzag(temp_array)
                 temp_array = qtable.Unquantize(temp_array)
@@ -385,4 +384,4 @@ class JPEGFile():
 
 
 if __name__ == "__main__":
-    j = JPEGFile("input/test2.jpg")
+    j = JPEGFile("input/berserk.jpg")
