@@ -1,8 +1,6 @@
-from enum import Enum, Flag
-from struct import pack, unpack
-from tkinter import Frame
+from enum import Enum
+from struct import unpack
 from huffman import Huffman, BitBuffer
-import numpy as np
 from idct import FIX_PRECISION, FLOAT2FIX, IDCT
 from PIL import Image
 
@@ -46,7 +44,13 @@ class JPEGSegment(Enum):
     DRI = 0x1D
     DHP = 0x1E
     EXP = 0x1F
-    APP = 0x20
+    APP0 = 0x20 # JFIF
+    APP1 = 0x21 # EXIF / XMP
+    APP2 = 0x22 # ICC
+    APP3 = 0x23 # META
+    APPC = 0x2C # Picture info / Ducky
+    APPD = 0x2D # Adobe IRB
+    APPE = 0x2E # Adobe
     COM = 0x3E
 class QuantizationType(Enum):
     PRECISION8 = 0x00
@@ -86,9 +90,12 @@ class JFIFHeader():
 
 class QuantizationTable():
     def __init__(self, bytes):
-        self.TableType = QuantizationType(bytes[0] >> 4)
+        self.bytesread = 0
+        self.TableType = QuantizationType(bytes[self.bytesread] >> 4)
         self.Id = bytes[0] & 0x0F
-        self.Data = bytes[1:]
+        self.bytesread +=1
+        self.Data = bytes[self.bytesread:self.bytesread+64]
+        self.bytesread +=64
         self.reverse_zigzag = [
             0,  1,  8, 16,  9,  2,  3, 10, 
             17, 24, 32, 25, 18, 11,  4,  5,
@@ -183,21 +190,22 @@ class StartOfFrame():
 
 class HuffmanTable():
     def __init__(self, bytes):
-        self.Id = bytes[0] & 0x0F
-        self.TableType = HuffmanTableType(bytes[0] >> 4)
+        self.bytesread = 0
+        self.Id = bytes[self.bytesread] & 0x0F
+        self.TableType = HuffmanTableType(bytes[self.bytesread] >> 4)
         self.Codes = {}
         self.Huffman = Huffman()
-        index = 1
+        self.bytesread += 1
         code = 0
         counts = []
         for i in range(16):
-            counts.append(bytes[index])
-            index += 1
+            counts.append(bytes[self.bytesread])
+            self.bytesread += 1
         for i in range(16):
             for _ in range(counts[i]):
-                self.Codes[(i+1, code)] = bytes[index]
+                self.Codes[(i+1, code)] = bytes[self.bytesread]
                 code +=1
-                index += 1
+                self.bytesread += 1
             code <<= 1
         self.Huffman.FromTable(self.Codes)
 
@@ -262,6 +270,7 @@ class JPEGFile():
         self.__app = None
         self.__sof = None
         self.__sos = None
+        self.__dri = 0
         self.__quantizationtables = []
         self.DCHuffmanTables = []
         self.ACHuffmanTables = []
@@ -283,7 +292,7 @@ class JPEGFile():
             segid = JPEGSegment(unpack(">H",code)[0] - 0xFFC0)
             if segid == JPEGSegment.SOI:
                 print("Start of Image")
-            elif segid == JPEGSegment.APP:
+            elif segid == JPEGSegment.APP0:
                 length = unpack(">H", self.__fs.read(2))[0] - 2
                 data = self.__fs.read(length)
                 self.__app = JFIFHeader(data)
@@ -291,9 +300,12 @@ class JPEGFile():
             elif segid == JPEGSegment.DQT:
                 length = unpack(">H", self.__fs.read(2))[0] - 2
                 data = self.__fs.read(length)
-                table = QuantizationTable(data)
-                print(table)
-                self.__quantizationtables.append(table)
+                bytesread = 0
+                while bytesread < length:
+                    table = QuantizationTable(data)
+                    print(table)
+                    self.__quantizationtables.append(table)
+                    bytesread += table.bytesread
             elif segid == JPEGSegment.SOF0:
                 length = unpack(">H", self.__fs.read(2))[0] - 2
                 data = self.__fs.read(length)
@@ -302,12 +314,18 @@ class JPEGFile():
             elif segid == JPEGSegment.DHT:
                 length = unpack(">H", self.__fs.read(2))[0] - 2
                 data = self.__fs.read(length)
-                table = HuffmanTable(data)
-                table.DumpCodes()
-                if table.TableType == HuffmanTableType.DC:
-                    self.DCHuffmanTables.append(table)
-                elif table.TableType == HuffmanTableType.AC:
-                    self.ACHuffmanTables.append(table)
+                bytesread = 0
+                while bytesread < length:
+                    table = HuffmanTable(data[bytesread:])
+                    if table.TableType == HuffmanTableType.DC:
+                        self.DCHuffmanTables.append(table)
+                    elif table.TableType == HuffmanTableType.AC:
+                        self.ACHuffmanTables.append(table)
+                    bytesread += table.bytesread
+            elif segid == JPEGSegment.DRI:
+                length = unpack(">H", self.__fs.read(2))[0] - 2
+                data = self.__fs.read(length)
+                self.__dri = unpack(">H", data)[0]
             elif segid == JPEGSegment.SOS:
                 length = unpack(">H", self.__fs.read(2))[0] - 2
                 data = self.__fs.read(length)
@@ -335,8 +353,17 @@ class JPEGFile():
             stride = int(self.__sof.AlignedWidth * c.SamplingFactorH / self.__sof.MaxH)
             height = int(self.__sof.AlignedHeight * c.SamplingFactorV / self.__sof.MaxV)
             self.__buffers[ctype] = YUVBuffer(stride, height)
+        # for mcui in range(8):
         for mcui in range(sof.MCUColumns * sof.MCURows):
             component : FrameComponent
+            if self.__dri > 0 and (mcui % self.__dri) == 0 and buffer.index > 0:
+                for k, v in prevDCs.items():
+                    prevDCs[k] = 0
+                buffer.gotonextbyte()
+                code = buffer.readint16()
+                if (code - 0xFFD0) < 8:
+                    print("hit reset {}".format(code - 0xFFD0))
+                
             for ctype, sc  in sos.Components.items():
                 fc : FrameComponent = sof.Components[ctype]
                 for v in range(fc.SamplingFactorV):
@@ -418,6 +445,8 @@ class JPEGFile():
                 imagedata[iDst+2] = b
                 iDst +=3
                 ySrc +=1
+            ySrc -= sof.Width
+            ySrc += yBuf.stride
         image = Image.frombytes("RGB", (self.__sof.Width, self.__sof.Height), bytes(imagedata))
         image.save('output/test.bmp', format="BMP")
         image.show()
@@ -426,4 +455,5 @@ class JPEGFile():
 
 
 if __name__ == "__main__":
-    j = JPEGFile("input/berserk.jpg")
+    # j = JPEGFile("input/berserk.jpg")
+    j = JPEGFile("T:\\Drawings\\Aah Megami Sama\\Belldandy 01.JPG")
