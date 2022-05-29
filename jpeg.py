@@ -1,16 +1,10 @@
 from enum import Enum, Flag
 from struct import pack, unpack
+from tkinter import Frame
 from huffman import Huffman, BitBuffer
 import numpy as np
-from scipy.fftpack import idct
+from idct import FIX_PRECISION, FLOAT2FIX, IDCT
 from PIL import Image
-from math import cos, pi, sqrt
-
-FIX_PRECISION = 11
-FIX_2COS_PI_4_16 = int((2 * cos(pi * 4 / 16)) * (1 << FIX_PRECISION)) ## 1.4142135623730951
-FIX_2COS_PI_2_16 = int((2 * cos(pi * 2 / 16)) * (1 << FIX_PRECISION)) ## 1.8477590650225735
-FIX_1COS_PI_2_16 = int((1 / cos(pi * 2 / 16)) * (1 << FIX_PRECISION)) ## 1.082392200292394
-FIX_1COS_PI_6_16 = int((1 / cos(pi * 6 / 16)) * (1 << FIX_PRECISION)) ## 2.613125929752753
 
 def clamp(val, minval, maxval):
     return max(minval,min(maxval,val))
@@ -106,28 +100,18 @@ class QuantizationTable():
             53, 60, 61, 54, 47, 55, 62, 63
         ]
         self.Data = self.Unzigzag(self.Data)
+        self.IDCT = IDCT(self.Data)
 
     def Unzigzag(self, input_array):
         uz = [0] * 64
         for i in range(64):
             uz[self.reverse_zigzag[i]] = input_array[i]
-        # result = "Unzigzag Table {:02X} Type {}".format(self.Id, self.TableType) + "\n"
-        # for i in range(8):
-        #     result += "".join("{: <6d}".format(b) for b in uz[i*8:(i*8)+8]) + "\n"
-        # print(result)
         return uz
-
-    def Unquantize(self, input_array):
-        uq = [0] * 64
-        for i in range(64):
-            uq[i] = input_array[i] * self.Data[i]
-        return uq
 
     def __repr__(self):
         result = "Table {:02X} Type {}".format(self.Id, self.TableType) + "\n"
-        uz = self.Unzigzag(self.Data)
         for i in range(8):
-            result += "".join("{: <4d}".format(b) for b in uz[i*8:(i*8)+8]) + "\n"
+            result += "".join("{: <4d}".format(b) for b in self.Data[i*8:(i*8)+8]) + "\n"
         return result
 
 class FrameComponent():
@@ -159,6 +143,38 @@ class StartOfFrame():
             data = bytes[6+(3*i):9+(3*i)]
             self.Components[componentkeys[i]] = FrameComponent(data)
 
+    @property
+    def MaxV(self):
+        return max(c.SamplingFactorV for c in self.Components.values())
+
+    @property
+    def MaxH(self):
+        return max(c.SamplingFactorH for c in self.Components.values())
+
+    @property
+    def MCUWidth(self):
+        return self.MaxH * 8
+    
+    @property
+    def MCUHeight(self):
+        return self.MaxV * 8
+
+    @property
+    def AlignedWidth(self):
+        return int((self.Width + self.MCUWidth -1)/self.MCUWidth) * self.MCUWidth
+    
+    @property
+    def AlignedHeight(self):
+        return int((self.Height + self.MCUHeight -1)/self.MCUHeight) * self.MCUHeight
+
+    @property
+    def MCUColumns(self):
+        return int(self.AlignedWidth / self.MCUWidth)
+
+    @property
+    def MCURows(self):
+        return int(self.AlignedHeight / self.MCUHeight)
+
     def __repr__(self):
         result = "Precision {} Dimension {}x{}".format(self.Precision, self.Width, self.Height)
         for k, v in self.Components.items():
@@ -184,7 +200,6 @@ class HuffmanTable():
                 index += 1
             code <<= 1
         self.Huffman.FromTable(self.Codes)
-        # self.Huffman.DrawTree(filename="{}_{}".format(self.TableType, self.Id))
 
     def DumpCodes(self, parent = None, code="", codes=None):
         node = self.Huffman.Root if parent is None else parent
@@ -237,6 +252,11 @@ class StartOfScan():
             result += " Component: {} {}".format(k, str(v))
         return result
 
+class YUVBuffer:
+    def __init__(self, stride, height):
+        self.stride = stride
+        self.height = height
+        self.buffer = [0] * (stride * height)
 class JPEGFile():
     def __init__(self, filename=None):
         self.__app = None
@@ -247,6 +267,7 @@ class JPEGFile():
         self.ACHuffmanTables = []
         self.__fs = None
         self.__flen = 0
+        self.__buffers = {}
         if filename is not None:
             self.__parseFile(filename)
 
@@ -306,76 +327,97 @@ class JPEGFile():
         data = self.__fs.read(datalength)
         buffer = BitBuffer(data)
         prevDCs = {t: 0 for t in self.__sos.Components}
-        MCUs = []
-        while not buffer.EOF:
-            MCU = {}
-            for ctype, component in self.__sos.Components.items():
-                ## Huffman DC Decoding
-                DCTable = self.DCHuffmanTables[component.HuffmanDCTable]
-                lnDC = DCTable.Huffman.DecodeChar(buffer)
-                if lnDC is None:
-                    break
-                temp_array = [0] * 64
-                if lnDC == 0:
-                    valDC = 0
-                else:
-                    valDC = buffer.readbits(lnDC)
-                    if valDC < (1 << (lnDC-1)):
-                        valDC = valDC - (1 << lnDC) + 1
-                valDC += prevDCs[ctype]
-                temp_array[0] = valDC
-                prevDCs[ctype] = valDC
-                ## Huffman AC Decoding
-                ACTable = self.ACHuffmanTables[component.HuffmanACTable]
-                index = 1
-                while index < 64:
-                    ## RLE decoding
-                    lnAC = ACTable.Huffman.DecodeChar(buffer)
-                    if lnAC is None or lnAC == 0:
-                        break
-                    else:
-                        lnZero = lnAC >> 4
-                        lnVal = lnAC & 0xF
-                        valAC = buffer.readbits(lnVal)
-                        if lnVal <= 0:
-                            valAC = 0
+        sof = self.__sof
+        sos = self.__sos
+        ## create buffers
+        c: FrameComponent
+        for ctype, c in self.__sof.Components.items():
+            stride = int(self.__sof.AlignedWidth * c.SamplingFactorH / self.__sof.MaxH)
+            height = int(self.__sof.AlignedHeight * c.SamplingFactorV / self.__sof.MaxV)
+            self.__buffers[ctype] = YUVBuffer(stride, height)
+        for mcui in range(sof.MCUColumns * sof.MCURows):
+            component : FrameComponent
+            for ctype, sc  in sos.Components.items():
+                fc : FrameComponent = sof.Components[ctype]
+                for v in range(fc.SamplingFactorV):
+                    for h in range(fc.SamplingFactorH):
+                        ## Huffman DC Decoding
+                        DCTable = self.DCHuffmanTables[sc.HuffmanDCTable]
+                        lnDC = DCTable.Huffman.DecodeChar(buffer)
+                        if lnDC is None:
+                            break
+                        temp_array = [0] * 64
+                        if lnDC == 0:
+                            valDC = 0
                         else:
-                            index += lnZero
-                            if valAC < (1 << (lnVal-1)):
-                                valAC = valAC - (1 << lnVal) + 1
-                            if index < 64:
-                                temp_array[index] = valAC
-                    index += 1
-                qtable = self.__quantizationtables[self.__sof.Components[ctype].QuantizationId]
-                temp_array = qtable.Unzigzag(temp_array)
-                temp_array = qtable.Unquantize(temp_array)
-                idct_coeffs = idct(temp_array,norm="ortho")
-                MCU[ctype] = idct_coeffs
-            if len(MCU) ==3:
-                MCUs.append(MCU)
+                            valDC = buffer.readbits(lnDC)
+                            if valDC < (1 << (lnDC-1)):
+                                valDC = valDC - (1 << lnDC) + 1
+                        valDC += prevDCs[ctype]
+                        temp_array[0] = valDC
+                        prevDCs[ctype] = valDC
+                        ## Huffman AC Decoding
+                        ACTable = self.ACHuffmanTables[sc.HuffmanACTable]
+                        index = 1
+                        while index < 64:
+                            ## RLE decoding
+                            lnAC = ACTable.Huffman.DecodeChar(buffer)
+                            if lnAC is None or lnAC == 0:
+                                break
+                            else:
+                                lnZero = lnAC >> 4
+                                lnVal = lnAC & 0xF
+                                valAC = buffer.readbits(lnVal)
+                                if lnVal <= 0:
+                                    valAC = 0
+                                else:
+                                    index += lnZero
+                                    if valAC < (1 << (lnVal-1)):
+                                        valAC = valAC - (1 << lnVal) + 1
+                                    if index < 64:
+                                        temp_array[index] = valAC
+                            index += 1
+                        qtable = self.__quantizationtables[fc.QuantizationId]
+                        temp_array = qtable.Unzigzag(temp_array)
+                        du = qtable.IDCT.idct2d8x8(temp_array)
+                        yuvbuf: YUVBuffer = self.__buffers[ctype]
+                        x = int(((mcui % sof.MCUColumns) * sof.MCUWidth + h * 8) * fc.SamplingFactorH / sof.MaxH)
+                        y = int((int(mcui / sof.MCUColumns) * sof.MCUHeight + v * 8) * fc.SamplingFactorV / sof.MaxV)
+                        idst = y * yuvbuf.stride + x
+                        isrc = 0
+                        for _ in range(8):
+                            yuvbuf.buffer[idst:idst + 8] = du[isrc:isrc + 8]
+                            idst += yuvbuf.stride
+                            isrc += 8
         imagedata = bytearray(self.__sof.Height * self.__sof.Width * 3)
-        for my in range(self.__sof.Height // 8):
-            for mx in range(self.__sof.Width // 8):
-                mcuID = int((my * (self.__sof.Width // 8)) + mx)
-                if mcuID >= len(MCUs):
-                    imagedata.append(0)
-                    imagedata.append(0)
-                    imagedata.append(0)
-                else:
-                    m = MCUs[mcuID]
-                    for y in range(8):
-                        offset = (((my* 8) + y ) * self.__sof.Width * 3) + (mx * 8 * 3)
-                        for x in range(8):
-                            mi = (y * 8) + x
-                            Y, Cb, Cr = (m['Y'][mi] + 128,m['Cb'][mi], m['Cr'][mi])
-                            r = clamp(int(Y + 1.402 * Cr),0,255)
-                            g = clamp(int(Y - 0.34414 * Cb - 0.71414 * Cr),0,255)
-                            b = clamp(int(Y + 1.772 * Cb),0,255)
-                            imagedata[offset] = r
-                            imagedata[offset+1] = g
-                            imagedata[offset+2] = b
-                            offset += 3
-                # print("X: {} Y: {} R: {} G: {} B: {} Y': {} Cb: {} Cr: {}".format(x,y,r,g,b,Y,Cb,Cr))
+        ySrc = 0
+        iDst = 0
+        yBuf : YUVBuffer = self.__buffers['Y']
+        cbBuf : YUVBuffer = self.__buffers['Cb']
+        crBuf : YUVBuffer = self.__buffers['Cr']
+        for i in range(sof.Height):
+            cbY = int(i * sof.Components['Cb'].SamplingFactorV / sof.MaxV)
+            crY = int(i * sof.Components['Cr'].SamplingFactorV / sof.MaxV)
+            for j in range(sof.Width):
+                cbX = int(j * sof.Components['Cb'].SamplingFactorH / sof.MaxH)
+                crX = int(j * sof.Components['Cr'].SamplingFactorH / sof.MaxH)
+                cbSrc = int(cbY * cbBuf.stride + cbX)
+                crSrc = int(crY * crBuf.stride + crX)
+                Y = yBuf.buffer[ySrc]
+                Cb = cbBuf.buffer[cbSrc]
+                Cr = crBuf.buffer[crSrc]
+                Y += 128 << FIX_PRECISION
+                r = clamp(int(Y + (FLOAT2FIX(1.402) * Cr >> FIX_PRECISION) >> FIX_PRECISION),0,255)
+                g = clamp(int(
+                        Y -(FLOAT2FIX(0.34414) * Cb >> FIX_PRECISION) - 
+                        (FLOAT2FIX(0.71414) * Cr >> FIX_PRECISION) >> FIX_PRECISION)
+                        ,0,255)
+                b = clamp(int(Y + (FLOAT2FIX(1.772) * Cb >> FIX_PRECISION) >> FIX_PRECISION),0,255)
+                imagedata[iDst] = r
+                imagedata[iDst+1] = g
+                imagedata[iDst+2] = b
+                iDst +=3
+                ySrc +=1
         image = Image.frombytes("RGB", (self.__sof.Width, self.__sof.Height), bytes(imagedata))
         image.save('output/test.bmp', format="BMP")
         image.show()
