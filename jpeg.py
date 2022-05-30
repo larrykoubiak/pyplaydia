@@ -146,17 +146,22 @@ class StartOfFrame():
         nbComponents = temp[3]
         componentkeys = ["Y","Cb","Cr"]
         self.Components = {}
+        self.cache = {}
         for i in range(nbComponents):
             data = bytes[6+(3*i):9+(3*i)]
             self.Components[componentkeys[i]] = FrameComponent(data)
 
     @property
     def MaxV(self):
-        return max(c.SamplingFactorV for c in self.Components.values())
+        if "maxv" not in self.cache:
+            self.cache["maxv"] = max(c.SamplingFactorV for c in self.Components.values())
+        return self.cache["maxv"]
 
     @property
     def MaxH(self):
-        return max(c.SamplingFactorH for c in self.Components.values())
+        if "maxh" not in self.cache:
+            self.cache["maxh"] = max(c.SamplingFactorH for c in self.Components.values())
+        return self.cache["maxh"]
 
     @property
     def MCUWidth(self):
@@ -347,14 +352,16 @@ class JPEGFile():
         prevDCs = {t: 0 for t in self.__sos.Components}
         sof = self.__sof
         sos = self.__sos
+        maxh = self.__sof.MaxH
+        maxv = self.__sof.MaxV
         ## create buffers
         c: FrameComponent
         for ctype, c in self.__sof.Components.items():
-            stride = int(self.__sof.AlignedWidth * c.SamplingFactorH / self.__sof.MaxH)
-            height = int(self.__sof.AlignedHeight * c.SamplingFactorV / self.__sof.MaxV)
+            stride = int(self.__sof.AlignedWidth * c.SamplingFactorH / maxh)
+            height = int(self.__sof.AlignedHeight * c.SamplingFactorV / maxv)
             self.__buffers[ctype] = YUVBuffer(stride, height)
-        # for mcui in range(8):
-        for mcui in range(sof.MCUColumns * sof.MCURows):
+        totalmcu = sof.MCUColumns * sof.MCURows
+        for mcui in range(totalmcu):
             component : FrameComponent
             if self.__dri > 0 and (mcui % self.__dri) == 0 and buffer.index > 0:
                 for k, v in prevDCs.items():
@@ -408,8 +415,8 @@ class JPEGFile():
                         temp_array = qtable.Unzigzag(temp_array)
                         du = qtable.IDCT.idct2d8x8(temp_array)
                         yuvbuf: YUVBuffer = self.__buffers[ctype]
-                        x = int(((mcui % sof.MCUColumns) * sof.MCUWidth + h * 8) * fc.SamplingFactorH / sof.MaxH)
-                        y = int((int(mcui / sof.MCUColumns) * sof.MCUHeight + v * 8) * fc.SamplingFactorV / sof.MaxV)
+                        x = int(((mcui % sof.MCUColumns) * sof.MCUWidth + h * 8) * fc.SamplingFactorH / maxh)
+                        y = int((int(mcui / sof.MCUColumns) * sof.MCUHeight + v * 8) * fc.SamplingFactorV / maxv)
                         idst = y * yuvbuf.stride + x
                         isrc = 0
                         for _ in range(8):
@@ -423,11 +430,11 @@ class JPEGFile():
         cbBuf : YUVBuffer = self.__buffers['Cb']
         crBuf : YUVBuffer = self.__buffers['Cr']
         for i in range(sof.Height):
-            cbY = int(i * sof.Components['Cb'].SamplingFactorV / sof.MaxV)
-            crY = int(i * sof.Components['Cr'].SamplingFactorV / sof.MaxV)
+            cbY = int(i * sof.Components['Cb'].SamplingFactorV / maxv)
+            crY = int(i * sof.Components['Cr'].SamplingFactorV / maxv)
             for j in range(sof.Width):
-                cbX = int(j * sof.Components['Cb'].SamplingFactorH / sof.MaxH)
-                crX = int(j * sof.Components['Cr'].SamplingFactorH / sof.MaxH)
+                cbX = int(j * sof.Components['Cb'].SamplingFactorH / maxh)
+                crX = int(j * sof.Components['Cr'].SamplingFactorH / maxh)
                 cbSrc = int(cbY * cbBuf.stride + cbX)
                 crSrc = int(crY * crBuf.stride + crX)
                 Y = yBuf.buffer[ySrc]
@@ -455,5 +462,5 @@ class JPEGFile():
 
 
 if __name__ == "__main__":
-    # j = JPEGFile("input/berserk.jpg")
-    j = JPEGFile("T:\\Drawings\\Aah Megami Sama\\Belldandy 01.JPG")
+    import cProfile
+    cProfile.run('j = JPEGFile("input/test.jpg")', filename="output/stats.prof")
