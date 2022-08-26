@@ -3,6 +3,7 @@ from struct import unpack
 from huffman import Huffman, BitBuffer
 from idct import FIX_PRECISION, FLOAT2FIX, IDCT
 from PIL import Image
+import os
 
 def clamp(val, minval, maxval):
     return max(minval,min(maxval,val))
@@ -455,6 +456,8 @@ class JPEGFile():
             ySrc -= sof.Width
             ySrc += yBuf.stride
         image = Image.frombytes("RGB", (self.__sof.Width, self.__sof.Height), bytes(imagedata))
+        if not os.path.exists("output"):
+            os.mkdir("output")
         image.save('output/test.bmp', format="BMP")
         image.show()
 

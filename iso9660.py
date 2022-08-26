@@ -250,6 +250,8 @@ class ISOImage():
                     pcms.extend(result)
                 if (sh.Submode & Submodes.EOR):
                     destination = "output" if destination is None else destination
+                    if not os.path.exists(destination):
+                        os.mkdir(destination)
                     filename = os.path.join(os.getcwd(), destination, "track" + "%02d" % filecounter + ".wav")
                     wavefile = wave.open(filename, "wb")
                     wavefile.setparams((1, 2, 44100, len(pcms),"NONE","not compressed"))
@@ -274,6 +276,8 @@ class ISOImage():
                 bytes += s.Data
                 if (sh.Submode & Submodes.EOR):
                     destination = "output" if destination is None else destination
+                    if not os.path.exists(destination):
+                        os.mkdir(destination)
                     filename = os.path.join(os.getcwd(), destination, "track" + "%02d" % filecounter + ".mpg")
                     with open(filename, "wb") as o:
                         o.write(bytes)
@@ -297,6 +301,8 @@ class ISOImage():
                 elif s.Data[0] == 0xF2:
                     bytes += s.Data
                     destination = "output" if destination is None else destination
+                    if not os.path.exists(destination):
+                        os.mkdir(destination)
                     filename = os.path.join(os.getcwd(), destination, "track_%02d_frame_%03d" % (filecounter,framecounter))
                     with open(filename, "wb") as o:
                         o.write(bytes)

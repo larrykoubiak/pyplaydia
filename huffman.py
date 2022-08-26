@@ -1,6 +1,8 @@
 from heapq import heappop, heappush
 from graphviz import Graph, Digraph
 from struct import unpack
+import os
+
 class BitBuffer:
     def __init__(self, values=None):
         self.__values = bytearray() if values is None else values
@@ -206,6 +208,8 @@ class Huffman:
             self.DrawTree(node.right, graph, code + "1")
             graph.edge(("Root" if code =="" else code), code + "1", "1")
         if parent is None:
+            if not os.path.exists("output"):
+                os.mkdir("output")
             graph.render('output/' + filename, format="png")
 
     @property
