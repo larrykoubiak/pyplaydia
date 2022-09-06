@@ -233,7 +233,7 @@ class ISOImage():
             with open(destination,'wb') as o:
                 o.write(buffer)
 
-    def ReadAudio(self, record: DirectoryRecord, destination=None):
+    def ReadAudio(self, record: DirectoryRecord, destination, limit=0):
         sectorId = record.ExtentLocation
         filecounter = 0
         prev1 = 0
@@ -249,10 +249,9 @@ class ISOImage():
                     result,prev1,prev2 = block.ReadPCM(prev1, prev2) 
                     pcms.extend(result)
                 if (sh.Submode & Submodes.EOR):
-                    destination = "output" if destination is None else destination
-                    if not os.path.exists(destination):
-                        os.mkdir(destination)
-                    filename = os.path.join(os.getcwd(), destination, "track" + "%02d" % filecounter + ".wav")
+                    filename = os.path.join(destination, "audio_{:03}.wav".format(filecounter))
+                    if not os.path.exists(os.path.dirname(filename)):
+                        os.mkdir(os.path.dirname(filename))
                     wavefile = wave.open(filename, "wb")
                     wavefile.setparams((1, 2, 44100, len(pcms),"NONE","not compressed"))
                     frames = pack(str(len(pcms)) + "h", *pcms)
@@ -262,10 +261,12 @@ class ISOImage():
                     prev1 = 0
                     prev2 = 0
                     filecounter +=1
+                    if limit > 0 and filecounter >= limit:
+                        break
             sectorId +=1
             sh = self.__imagestream.Sectors[sectorId]
 
-    def ReadVideo(self, record: DirectoryRecord, destination=None):
+    def ReadVideo(self, record: DirectoryRecord, destination, limit=0):
         sectorId = record.ExtentLocation
         filecounter = 0
         bytes = bytearray()
@@ -275,19 +276,20 @@ class ISOImage():
                 s = self.__imagestream.ReadSector(sectorId)
                 bytes += s.Data
                 if (sh.Submode & Submodes.EOR):
-                    destination = "output" if destination is None else destination
-                    if not os.path.exists(destination):
-                        os.mkdir(destination)
-                    filename = os.path.join(os.getcwd(), destination, "track" + "%02d" % filecounter + ".mpg")
+                    filename = os.path.join(destination, "video_{:03}.bin".format(filecounter))
+                    if not os.path.exists(os.path.dirname(filename)):
+                        os.mkdir(os.path.dirname(filename))
                     with open(filename, "wb") as o:
                         o.write(bytes)
                         bytes = bytearray()
                         filecounter += 1
+                        if limit > 0 and filecounter >= limit:
+                            break
             sectorId += 1
             sh = self.__imagestream.Sectors[sectorId]
 
 
-    def ReadVideoFrames(self, record: DirectoryRecord, destination=None):
+    def ReadVideoFrames(self, record: DirectoryRecord, destination, limit=0):
         sectorId = record.ExtentLocation
         filecounter = 0
         framecounter = 0
@@ -300,10 +302,9 @@ class ISOImage():
                     pass
                 elif s.Data[0] == 0xF2:
                     bytes += s.Data
-                    destination = "output" if destination is None else destination
-                    if not os.path.exists(destination):
-                        os.mkdir(destination)
-                    filename = os.path.join(os.getcwd(), destination, "track_%02d_frame_%03d" % (filecounter,framecounter))
+                    filename = os.path.join(destination, "{:03}/frame_{:04}.wav".format(filecounter, framecounter))
+                    if not os.path.exists(os.path.dirname(filename)):
+                        os.mkdir(os.path.dirname(filename))
                     with open(filename, "wb") as o:
                         o.write(bytes)
                     bytes = bytearray()
@@ -313,7 +314,7 @@ class ISOImage():
                 if (sh.Submode & Submodes.EOR):
                     filecounter += 1
                     framecounter = 0
-                    if filecounter > 3:
+                    if limit > 0 and filecounter >= limit:
                         break
             sectorId += 1
             sh = self.__imagestream.Sectors[sectorId]
