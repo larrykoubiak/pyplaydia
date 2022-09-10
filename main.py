@@ -6,7 +6,7 @@ if __name__ == "__main__":
     parser.add_argument("-c", "--cue_path", default="input/Dragon Ball Z - Shin Saiyajin Zetsumetsu Keikaku - Chikyuu Hen (Japan).cue",help="Input CUE file path")
     parser.add_argument("-d", "--destination", default="output", help="Destination folder")
     parser.add_argument("-l", "--limit", default=0, help="Limit number of files to extract (0=no limit)")
-    parser.add_argument("-a", "--audio", action="store_false", help="Extract audio tracks (default=True)")
+    parser.add_argument("-a", "--audio", action="store_true", help="Extract audio tracks (default=False)")
     parser.add_argument("-v", "--video", action="store_true", help="Extract video tracks (default=False)")
     parser.add_argument("-f", "--frame", action="store_true", help="Extract video frames (default=False)")
 

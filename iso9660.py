@@ -302,7 +302,7 @@ class ISOImage():
                     pass
                 elif s.Data[0] == 0xF2:
                     bytes += s.Data
-                    filename = os.path.join(destination, "{:03}/frame_{:04}.wav".format(filecounter, framecounter))
+                    filename = os.path.join(destination, "{:03}/frame_{:04}.bin".format(filecounter, framecounter))
                     if not os.path.exists(os.path.dirname(filename)):
                         os.mkdir(os.path.dirname(filename))
                     with open(filename, "wb") as o:
