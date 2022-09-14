@@ -1,9 +1,10 @@
 from enum import Enum
 from struct import unpack
-from huffman import Huffman, BitBuffer
-from idct import FIX_PRECISION, FLOAT2FIX, IDCT
+from huffman import Huffman, BitBuffer, HuffmanTableType
 from PIL import Image
 import os
+from quantization import QuantizationTable, QuantizationType
+from idct import FIX_PRECISION, FLOAT2FIX
 
 def clamp(val, minval, maxval):
     return max(minval,min(maxval,val))
@@ -53,12 +54,8 @@ class JPEGSegment(Enum):
     APPD = 0x2D # Adobe IRB
     APPE = 0x2E # Adobe
     COM = 0x3E
-class QuantizationType(Enum):
-    PRECISION8 = 0x00
-    PRECISION16 = 0x01
-class HuffmanTableType(Enum):
-    DC = 0x00
-    AC = 0x01
+
+
 class JPEGComponents(Enum):
     GREYSCALE = 0x01
     RGB = 0x03
@@ -88,39 +85,6 @@ class JFIFHeader():
             self.ThumbW,
             self.Thumbdata
         )
-
-class QuantizationTable():
-    def __init__(self, bytes):
-        self.bytesread = 0
-        self.TableType = QuantizationType(bytes[self.bytesread] >> 4)
-        self.Id = bytes[0] & 0x0F
-        self.bytesread +=1
-        self.Data = bytes[self.bytesread:self.bytesread+64]
-        self.bytesread +=64
-        self.reverse_zigzag = [
-            0,  1,  8, 16,  9,  2,  3, 10, 
-            17, 24, 32, 25, 18, 11,  4,  5,
-            12, 19, 26, 33, 40, 48, 41, 34, 
-            27, 20, 13,  6,  7, 14, 21, 28,
-            35, 42, 49, 56, 57, 50, 43, 36, 
-            29, 22, 15, 23, 30, 37, 44, 51,
-            58, 59, 52, 45, 38, 31, 39, 46, 
-            53, 60, 61, 54, 47, 55, 62, 63
-        ]
-        self.Data = self.Unzigzag(self.Data)
-        self.IDCT = IDCT(self.Data)
-
-    def Unzigzag(self, input_array):
-        uz = [0] * 64
-        for i in range(64):
-            uz[self.reverse_zigzag[i]] = input_array[i]
-        return uz
-
-    def __repr__(self):
-        result = "Table {:02X} Type {}".format(self.Id, self.TableType) + "\n"
-        for i in range(8):
-            result += "".join("{: <4d}".format(b) for b in self.Data[i*8:(i*8)+8]) + "\n"
-        return result
 
 class FrameComponent():
     def __init__(self, bytes):
@@ -229,7 +193,6 @@ class HuffmanTable():
         if parent is None:
             for k,v in codes.items():
                 print("{};{};{};{:02X}".format(self.TableType,self.Id,k,v))
-    
 
     def __repr__(self):
         result = "Table {:02X} Type {}".format(self.Id, self.TableType)
@@ -311,6 +274,7 @@ class JPEGFile():
                     table = QuantizationTable(data)
                     print(table)
                     self.__quantizationtables.append(table)
+                    table.ToJSON("output/{}_{}.json".format(table.TableType, table.Id))
                     bytesread += table.bytesread
             elif segid == JPEGSegment.SOF0:
                 length = unpack(">H", self.__fs.read(2))[0] - 2
@@ -328,6 +292,7 @@ class JPEGFile():
                     elif table.TableType == HuffmanTableType.AC:
                         self.ACHuffmanTables.append(table)
                     bytesread += table.bytesread
+                    table.Huffman.ToJSON("output/{}_{}.json".format(table.TableType, table.Id))
             elif segid == JPEGSegment.DRI:
                 length = unpack(">H", self.__fs.read(2))[0] - 2
                 data = self.__fs.read(length)
@@ -371,7 +336,6 @@ class JPEGFile():
                 code = buffer.readint16()
                 if (code - 0xFFD0) < 8:
                     print("hit reset {}".format(code - 0xFFD0))
-                
             for ctype, sc  in sos.Components.items():
                 fc : FrameComponent = sof.Components[ctype]
                 for v in range(fc.SamplingFactorV):

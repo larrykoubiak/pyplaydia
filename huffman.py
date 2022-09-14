@@ -2,7 +2,12 @@ from heapq import heappop, heappush
 from graphviz import Graph, Digraph
 from struct import unpack
 import os
+from json import load, dump
+from enum import Enum
 
+class HuffmanTableType(Enum):
+    DC = 0x00
+    AC = 0x01
 class BitBuffer:
     def __init__(self, values=None):
         self.__values = bytearray() if values is None else values
@@ -104,10 +109,12 @@ class HuffmanNode:
         return "'%s': %d" % (self.value, self.freq)
 
 class Huffman:
-    def __init__(self):
+    def __init__(self, filename = None):
         self.root = None
         self.codes = {}
         self.reverse_codes = {}
+        if filename is not None:
+            self.FromJSON(filename)
     
     def FromString(self, input_string):
         frequencies = {}
@@ -152,6 +159,31 @@ class Huffman:
                     node = node.right
             node.value = v
 
+    def FromJSON(self, filename):
+        self.root = HuffmanNode(0)
+        with open(filename, "r") as f:
+            jsondic = load(f)
+        for entry in jsondic:
+            node = self.root
+            for i in range(entry["len"]):
+                b =  entry["binary"][i]
+                if b == "0":
+                    if node.left is None:
+                        node.left = HuffmanNode()
+                    node = node.left
+                elif b == "1":
+                    if node.right is None:
+                        node.right = HuffmanNode()
+                    node = node.right
+            node.value = entry["value"]
+
+    def ToJSON(self, filename):
+        jsondic = []
+        self.__traversetree(self.root, "")
+        for k, v in self.reverse_codes.items():
+            jsondic.append({"len":len(k), "code": int(k,2), "binary": k, "value": v, "hex": "{:02X}".format(v)})
+        with open(filename, "w") as f:
+            dump(jsondic, f, indent=4)
 
     def __traversetree(self, node, code):
         if node is None:
