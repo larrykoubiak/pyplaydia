@@ -1,6 +1,6 @@
 from heapq import heappop, heappush
 from graphviz import Graph, Digraph
-from struct import unpack
+from bitbuffer import BitBuffer
 import os
 from json import load, dump
 from enum import Enum
@@ -8,82 +8,6 @@ from enum import Enum
 class HuffmanTableType(Enum):
     DC = 0x00
     AC = 0x01
-class BitBuffer:
-    def __init__(self, values=None):
-        self.__values = bytearray() if values is None else values
-        self.__buffer = 0
-        self.__pos = 0
-        self.__index = 0
-
-    def push(self, bit):
-        self.__buffer <<= 1
-        self.__buffer |= bit
-        self.__pos += 1
-        if self.__pos == 8:
-            self.__values.append(self.__buffer)
-            if self.__buffer == 0xFF:
-                self.__values.append(0x00)
-            self.__buffer = 0
-            self.__pos = 0
-    
-    def pop(self):
-        self.__buffer = (self.__values[self.__index] >> (7 - (self.__pos)))
-        self.__pos += 1
-        if self.__pos > 7:
-            self.__pos = 0
-            if self.__index < len(self.__values):
-                self.__index += 1
-                if self.__values[self.__index -1] == 0xFF and self.__values[self.__index] == 0x00:
-                    self.__index += 1
-            else:
-                return None
-        return self.__buffer & 0x01
-
-    def readbits(self, nbbits):
-        val = 0
-        for _ in range(nbbits):
-            b = self.pop()
-            if b is None:
-                return None
-            val <<= 1
-            val |= b
-        return val
-
-    def readint16(self):
-        data = self.__values[self.__index:self.__index + 2]
-        val = unpack(">H", data)[0]
-        self.__index += 2
-        return val
-
-    def gotonextbyte(self):
-        if self.__pos != 0:
-            self.__pos = 0
-            self.__index += 1
-
-    @property
-    def index(self):
-        return self.__index
-
-    @property
-    def pos(self):
-        return self.__pos
-
-    @property
-    def EOF(self):
-        return self.__index >= len(self.__values)
-    
-    @property
-    def Values(self):
-        values = self.__values
-        if self.__pos > 0:
-            buffer = self.__buffer << (8 - self.__pos)
-            # buffer |= (0xff >> self.__pos)
-            values.append(buffer)
-        return values
-
-    @Values.setter
-    def Values(self, value):
-        self.__values = value
 
 class HuffmanNode:
     def __init__(self, val = None, freq = None):
@@ -109,11 +33,16 @@ class HuffmanNode:
         return "'%s': %d" % (self.value, self.freq)
 
 class Huffman:
-    def __init__(self, filename = None):
+    def __init__(self, bytes=None, filename = None):
+        self.Id = None
+        self.TableType = None
+        self.bytesread = 0
         self.root = None
         self.codes = {}
         self.reverse_codes = {}
-        if filename is not None:
+        if bytes is not None:
+            self.FromBytes(bytes)
+        elif filename is not None:
             self.FromJSON(filename)
     
     def FromString(self, input_string):
@@ -140,9 +69,25 @@ class Huffman:
         code = ""
         self.__traversetree(self.root, code)
 
-    def FromTable(self, table):
+    def FromBytes(self, bytes):
+        self.bytesread = 0
+        self.Id = bytes[self.bytesread] & 0x0F
+        self.TableType = HuffmanTableType(bytes[self.bytesread] >> 4)
+        self.bytesread += 1
+        codes = {}
+        code = 0
+        counts = []
+        for i in range(16):
+            counts.append(bytes[self.bytesread])
+            self.bytesread += 1
+        for i in range(16):
+            for _ in range(counts[i]):
+                codes[(i+1, code)] = bytes[self.bytesread]
+                code +=1
+                self.bytesread += 1
+            code <<= 1
         self.root = HuffmanNode(0)
-        for k, v in table.items():
+        for k, v in codes.items():
             node = self.root
             ln = k[0]
             code = "{:0" + str(ln) +"b}"
@@ -243,6 +188,13 @@ class Huffman:
             if not os.path.exists("output"):
                 os.mkdir("output")
             graph.render('output/' + filename, format="png")
+
+    def __repr__(self):
+        result = "Table {:02X} Type {}".format(self.Id, self.TableType)
+        for k, v in self.Codes.items():
+            formatstr = "\n{:0" + str(k[0]) + "b} at length {} = {:02X}" 
+            result += formatstr.format(k[1],k[0],v)
+        return result
 
     @property
     def Root(self):

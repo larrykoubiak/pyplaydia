@@ -1,10 +1,13 @@
 from enum import Enum
 from struct import unpack
-from huffman import Huffman, BitBuffer, HuffmanTableType
+from bitbuffer import BitBuffer
+from idct import FIX_PRECISION, FLOAT2FIX
+from quantization import QuantizationTable, QuantizationType
+from huffman import Huffman, HuffmanTableType
+from frame import StartOfFrame, FrameComponent
+from scan import StartOfScan, ScanComponent
 from PIL import Image
 import os
-from quantization import QuantizationTable, QuantizationType
-from idct import FIX_PRECISION, FLOAT2FIX
 
 def clamp(val, minval, maxval):
     return max(minval,min(maxval,val))
@@ -55,7 +58,6 @@ class JPEGSegment(Enum):
     APPE = 0x2E # Adobe
     COM = 0x3E
 
-
 class JPEGComponents(Enum):
     GREYSCALE = 0x01
     RGB = 0x03
@@ -85,149 +87,6 @@ class JFIFHeader():
             self.ThumbW,
             self.Thumbdata
         )
-
-class FrameComponent():
-    def __init__(self, bytes):
-        temp = unpack("BBB", bytes)
-        self.Id = temp[0]
-        self.SamplingFactorV = temp[1] & 0xF
-        self.SamplingFactorH = temp[1] >> 4
-        self.QuantizationId = temp[2]
-
-    def __repr__(self):
-        return "Id: {} Sampling Factor {}x{} Quantization Table Id {}".format(
-            self.Id,
-            self.SamplingFactorH,
-            self.SamplingFactorV,
-            self.QuantizationId
-        )
-
-class StartOfFrame():
-    def __init__(self, bytes):
-        temp = unpack(">BHHB", bytes[:6])
-        self.Precision = temp[0]
-        self.Height = temp[1]
-        self.Width = temp[2]
-        nbComponents = temp[3]
-        componentkeys = ["Y","Cb","Cr"]
-        self.Components = {}
-        self.cache = {}
-        for i in range(nbComponents):
-            data = bytes[6+(3*i):9+(3*i)]
-            self.Components[componentkeys[i]] = FrameComponent(data)
-
-    @property
-    def MaxV(self):
-        if "maxv" not in self.cache:
-            self.cache["maxv"] = max(c.SamplingFactorV for c in self.Components.values())
-        return self.cache["maxv"]
-
-    @property
-    def MaxH(self):
-        if "maxh" not in self.cache:
-            self.cache["maxh"] = max(c.SamplingFactorH for c in self.Components.values())
-        return self.cache["maxh"]
-
-    @property
-    def MCUWidth(self):
-        return self.MaxH * 8
-    
-    @property
-    def MCUHeight(self):
-        return self.MaxV * 8
-
-    @property
-    def AlignedWidth(self):
-        return int((self.Width + self.MCUWidth -1)/self.MCUWidth) * self.MCUWidth
-    
-    @property
-    def AlignedHeight(self):
-        return int((self.Height + self.MCUHeight -1)/self.MCUHeight) * self.MCUHeight
-
-    @property
-    def MCUColumns(self):
-        return int(self.AlignedWidth / self.MCUWidth)
-
-    @property
-    def MCURows(self):
-        return int(self.AlignedHeight / self.MCUHeight)
-
-    def __repr__(self):
-        result = "Precision {} Dimension {}x{}".format(self.Precision, self.Width, self.Height)
-        for k, v in self.Components.items():
-            result += "\n\tComponent {} {}".format(k, str(v))
-        return result
-
-class HuffmanTable():
-    def __init__(self, bytes):
-        self.bytesread = 0
-        self.Id = bytes[self.bytesread] & 0x0F
-        self.TableType = HuffmanTableType(bytes[self.bytesread] >> 4)
-        self.Codes = {}
-        self.Huffman = Huffman()
-        self.bytesread += 1
-        code = 0
-        counts = []
-        for i in range(16):
-            counts.append(bytes[self.bytesread])
-            self.bytesread += 1
-        for i in range(16):
-            for _ in range(counts[i]):
-                self.Codes[(i+1, code)] = bytes[self.bytesread]
-                code +=1
-                self.bytesread += 1
-            code <<= 1
-        self.Huffman.FromTable(self.Codes)
-
-    def DumpCodes(self, parent = None, code="", codes=None):
-        node = self.Huffman.Root if parent is None else parent
-        if parent is None:
-            codes= {}
-        if node.IsLeaf():
-            codes[code] = node.value
-        else:
-            if node.left is not None:
-                self.DumpCodes(node.left, code+ "0", codes)
-            if node.right is not None:
-                self.DumpCodes(node.right, code+ "1", codes)
-        if parent is None:
-            for k,v in codes.items():
-                print("{};{};{};{:02X}".format(self.TableType,self.Id,k,v))
-
-    def __repr__(self):
-        result = "Table {:02X} Type {}".format(self.Id, self.TableType)
-        for k, v in self.Codes.items():
-            formatstr = "\n{:0" + str(k[0]) + "b} at length {} = {:02X}" 
-            result += formatstr.format(k[1],k[0],v)
-        return result
-
-class ScanComponent():
-    def __init__(self, bytes):
-        temp = unpack("BB", bytes)
-        self.Id = temp[0]
-        self.HuffmanACTable = temp[1] & 0xF
-        self.HuffmanDCTable = temp[1] >> 4
-
-    def __repr__(self):
-        return "Id: {} Huffman DC {} AC {}".format(
-            self.Id,
-            self.HuffmanDCTable,
-            self.HuffmanACTable
-        )
-
-class StartOfScan():
-    def __init__(self, bytes):
-        nbcomponents = bytes[0]
-        componentkeys = ["Y","Cb","Cr"]
-        self.Components = {}
-        for i in range(nbcomponents):
-            self.Components[componentkeys[i]] = ScanComponent(bytes[1+(2*i):3+(2*i)])
-    
-    def __repr__(self):
-        result = "SOS"
-        for k, v in self.Components.items():
-            result += " Component: {} {}".format(k, str(v))
-        return result
 
 class YUVBuffer:
     def __init__(self, stride, height):
@@ -286,13 +145,13 @@ class JPEGFile():
                 data = self.__fs.read(length)
                 bytesread = 0
                 while bytesread < length:
-                    table = HuffmanTable(data[bytesread:])
+                    table = Huffman(data[bytesread:])
                     if table.TableType == HuffmanTableType.DC:
                         self.DCHuffmanTables.append(table)
                     elif table.TableType == HuffmanTableType.AC:
                         self.ACHuffmanTables.append(table)
                     bytesread += table.bytesread
-                    table.Huffman.ToJSON("output/{}_{}.json".format(table.TableType, table.Id))
+                    table.ToJSON("output/{}_{}.json".format(table.TableType, table.Id))
             elif segid == JPEGSegment.DRI:
                 length = unpack(">H", self.__fs.read(2))[0] - 2
                 data = self.__fs.read(length)
@@ -302,7 +161,7 @@ class JPEGFile():
                 data = self.__fs.read(length)
                 self.__sos = StartOfScan(data)
                 print(self.__sos)
-                self.Decode()                
+                self.Decode()
             elif segid == JPEGSegment.EOI:
                 print("End of Image")
             else:
@@ -342,7 +201,7 @@ class JPEGFile():
                     for h in range(fc.SamplingFactorH):
                         ## Huffman DC Decoding
                         DCTable = self.DCHuffmanTables[sc.HuffmanDCTable]
-                        lnDC = DCTable.Huffman.DecodeChar(buffer)
+                        lnDC = DCTable.DecodeChar(buffer)
                         if lnDC is None:
                             break
                         temp_array = [0] * 64
@@ -360,7 +219,7 @@ class JPEGFile():
                         index = 1
                         while index < 64:
                             ## RLE decoding
-                            lnAC = ACTable.Huffman.DecodeChar(buffer)
+                            lnAC = ACTable.DecodeChar(buffer)
                             if lnAC is None or lnAC == 0:
                                 break
                             else:
