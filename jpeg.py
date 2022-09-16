@@ -7,7 +7,6 @@ from huffman import Huffman, HuffmanTableType
 from frame import StartOfFrame, FrameComponent
 from scan import StartOfScan, ScanComponent
 from PIL import Image
-from json import load, dump
 import os
 
 def clamp(val, minval, maxval):
@@ -126,7 +125,7 @@ class YUVBuffer:
         self.height = height
         self.buffer = [0] * (stride * height)
 class JFIFFile():
-    def __init__(self, filename=None):
+    def __init__(self, filename=None, dict=None):
         self.__app = None
         self.__sof = None
         self.__sos = None
@@ -137,8 +136,11 @@ class JFIFFile():
         self.__fs = None
         self.__flen = 0
         self.__buffers = {}
+        self.__scandata = None
         if filename is not None:
             self.FromFile(filename)
+        elif dict is not None:
+            self.FromDict(dict)
 
     def FromFile(self, filename):
         self.__fs = open(filename, 'rb')
@@ -190,8 +192,7 @@ class JFIFFile():
                 self.__sos = StartOfScan(data)
                 print(self.__sos)
                 scanlength = self.__flen - self.__fs.tell() - 2
-                scandata = self.__fs.read(scanlength)
-                self.Decode(scandata)
+                self.scandata = self.__fs.read(scanlength)
             elif segid == JPEGSegment.EOI:
                 print("End of Image")
             else:
@@ -200,6 +201,31 @@ class JFIFFile():
                 self.__fs.seek(length, 1)
             code = self.__fs.read(2)
     
+    def FromDict(self, dict):
+        self.__app = JFIFHeader(dict=dict["APP0"])
+        for h in dict["DHT"]["DC"]:
+            self.DCHuffmanTables.append(Huffman(dict=h))
+        for h in dict["DHT"]["AC"]:
+            self.ACHuffmanTables.append(Huffman(dict=h))
+        for q in dict["DQT"]:
+            self.__quantizationtables.append(QuantizationTable(dict=q))
+        self.__dri = dict["DRI"]
+        self.__sof = StartOfFrame(dict=dict["SOF"])
+        self.__sos = StartOfScan(dict=dict["SOS"])
+
+    def ToDict(self):
+        return {
+            "APP0": self.__app.ToDict(),
+            "DHT": {
+                "DC": [h.ToDict() for h in self.DCHuffmanTables],
+                "AC": [h.ToDict() for h in self.ACHuffmanTables]
+            },
+            "DQT": [q.ToDict() for q in self.__quantizationtables],
+            "DRI": self.__dri,
+            "SOF": self.__sof.ToDict(),
+            "SOS": self.__sos.ToDict()
+        }
+
     def Decode(self, data):
         buffer = BitBuffer(data)
         prevDCs = {t: 0 for t in self.__sos.Components}
@@ -311,20 +337,10 @@ class JFIFFile():
             os.mkdir("output")
         image.save('output/test.bmp', format="BMP")
         image.show()
-        self.__fs.seek(-2, 2)
-
-    def ToJSON(self, filename):
-        jsondic = {
-            "APP0": self.__app.ToDict(),
-            "DHT": [h.ToDict() for h in self.DCHuffmanTables] + [h.ToDict() for h in self.ACHuffmanTables],
-            "DQT": [q.ToDict() for q in self.__quantizationtables],
-            "DRI": self.__dri,
-            "SOF": self.__sof.ToDict(),
-            "SOS": self.__sos.ToDict()
-        }
-        with open(filename, "w") as f:
-            dump(jsondic, f, indent=4)
 
 if __name__ == "__main__":
+    from json import dump
     j = JFIFFile("input/test.jpg")
-    j.ToJSON("input/config.json")
+    j.Decode(j.scandata)
+    with open("input/config.json", "w") as f:
+        dump(j.ToDict(), f, indent=4)

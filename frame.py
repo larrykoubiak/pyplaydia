@@ -41,7 +41,7 @@ class FrameComponent():
         )
 
 class StartOfFrame():
-    def __init__(self, bytes=None, filename=None):
+    def __init__(self, bytes=None, dict=None):
         self.Precision = None
         self.Height = None
         self.Width = None
@@ -49,6 +49,8 @@ class StartOfFrame():
         self.cache = {}
         if bytes is not None:
             self.FromBytes(bytes)
+        elif dict is not None:
+            self.FromDict(dict)
 
     def FromBytes(self, bytes):
         temp = unpack(">BHHB", bytes[:6])
@@ -65,7 +67,7 @@ class StartOfFrame():
         self.Precision = dict["Precision"]
         self.Height = dict["Height"]
         self.Width = dict["Width"]
-        for k, v in dict["Components"]:
+        for k, v in dict["Components"].items():
             self.Components[k] = FrameComponent(dict=v)
 
     def ToDict(self):

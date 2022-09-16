@@ -6,7 +6,7 @@ class QuantizationType(Enum):
     PRECISION16 = 0x01
 
 class QuantizationTable():
-    def __init__(self, bytes=None, filename=None):
+    def __init__(self, bytes=None, dict=None):
         self.reverse_zigzag = [
             0,  1,  8, 16,  9,  2,  3, 10, 
             17, 24, 32, 25, 18, 11,  4,  5,
@@ -23,8 +23,8 @@ class QuantizationTable():
         self.IDCT = None
         if bytes is not None:
             self.FromBytes(bytes)
-        elif filename is not None:
-            self.FromDict(filename)
+        elif dict is not None:
+            self.FromDict(dict)
 
     def Unzigzag(self, input_array):
         uz = [0] * 64

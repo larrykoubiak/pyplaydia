@@ -36,10 +36,12 @@ class ScanComponent():
         )
 
 class StartOfScan():
-    def __init__(self, bytes=None, filename=None):
+    def __init__(self, bytes=None, dict=None):
         self.Components = {}
         if bytes is not None:
             self.FromBytes(bytes)
+        elif dict is not None:
+            self.FromDict(dict)
 
     def FromBytes(self, bytes):
         nbcomponents = bytes[0]
