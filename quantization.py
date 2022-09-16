@@ -1,6 +1,5 @@
 from idct import IDCT
 from enum import Enum
-from json import load, dump
 
 class QuantizationType(Enum):
     PRECISION8 = 0x00
@@ -18,14 +17,14 @@ class QuantizationTable():
             58, 59, 52, 45, 38, 31, 39, 46, 
             53, 60, 61, 54, 47, 55, 62, 63
         ]
-        self.TableType = QuantizationType.PRECISION8
+        self.TableType = None
         self.Id = 0
         self.Data = []
         self.IDCT = None
         if bytes is not None:
             self.FromBytes(bytes)
         elif filename is not None:
-            self.FromJSON(filename)
+            self.FromDict(filename)
 
     def Unzigzag(self, input_array):
         uz = [0] * 64
@@ -43,15 +42,19 @@ class QuantizationTable():
         self.Data = self.Unzigzag(self.Data)
         self.IDCT = IDCT(self.Data)
 
-    def FromJSON(self, filename):
-        with open(filename, "r") as f:
-            self.Data = load(f)
-            self.IDCT = IDCT(self.Data)
+    def FromDict(self, dict):
+        self.Id = dict["Id"]
+        self.TableType = QuantizationType(dict["TableType"])
+        self.Data = dict["Table"]
+        self.IDCT = IDCT(self.Data)
 
-    def ToJSON(self, filename):
-        with open(filename, "w") as f:
-            dump(self.Data, f)
-
+    def ToDict(self):
+        return {
+            "Id": self.Id,
+            "TableType": self.TableType.value,
+            "Table": self.Data
+        }
+ 
     def __repr__(self):
         result = "Table {:02X} Type {}".format(self.Id, self.TableType) + "\n"
         for i in range(8):

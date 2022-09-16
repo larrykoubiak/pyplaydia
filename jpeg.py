@@ -7,6 +7,7 @@ from huffman import Huffman, HuffmanTableType
 from frame import StartOfFrame, FrameComponent
 from scan import StartOfScan, ScanComponent
 from PIL import Image
+from json import load, dump
 import os
 
 def clamp(val, minval, maxval):
@@ -64,7 +65,18 @@ class JPEGComponents(Enum):
     CMYK = 0x04
 
 class JFIFHeader():
-    def __init__(self, bytes):
+    def __init__(self, bytes=None, dict=None):
+        self.Version = None
+        self.Unit = None
+        self.DensityH = None
+        self.DensityV = None
+        self.ThumbW = None
+        self.ThumbH = None
+        self.Thumbdata = None
+        if bytes is not None:
+            self.FromBytes(bytes)
+
+    def FromBytes(self, bytes):
         temp = unpack(">5sBBBHHBB", bytes[0:14])
         self.Version = "%s v%d.%d" % (temp[0][:4].decode(), temp[1], temp[2])
         self.Unit = JPEGDensityUnit(temp[3])
@@ -76,6 +88,26 @@ class JFIFHeader():
         thumblen = 3 * self.ThumbH * self.ThumbW
         if thumblen > 0:
             self.Thumbdata = bytes[14:14 + thumblen]
+
+    def FromDict(self, dict):
+        self.Version = dict["Version"]
+        self.Unit = JPEGDensityUnit(dict["Unit"])
+        self.DensityH = dict["DensityH"]
+        self.DensityV = dict["DensityV"]
+        self.ThumbW = dict["ThumbW"]
+        self.ThumbH = dict["ThumbH"]
+        self.Thumbdata = dict["ThumbData"]
+
+    def ToDict(self):
+        return {
+            "Version": self.Version,
+            "Unit": self.Unit.value,
+            "DensityH": self.DensityH,
+            "DensityV": self.DensityV,
+            "ThumbW": self.ThumbW,
+            "ThumbH": self.ThumbH,
+            "Thumbdata": self.Thumbdata
+        }
 
     def __repr__(self):
         return "{} {} {} {} Thumbnail {}x{} {}".format(
@@ -93,7 +125,7 @@ class YUVBuffer:
         self.stride = stride
         self.height = height
         self.buffer = [0] * (stride * height)
-class JPEGFile():
+class JFIFFile():
     def __init__(self, filename=None):
         self.__app = None
         self.__sof = None
@@ -106,9 +138,9 @@ class JPEGFile():
         self.__flen = 0
         self.__buffers = {}
         if filename is not None:
-            self.__parseFile(filename)
+            self.FromFile(filename)
 
-    def __parseFile(self, filename):
+    def FromFile(self, filename):
         self.__fs = open(filename, 'rb')
         self.__fs.seek(0,2)
         self.__flen = self.__fs.tell()
@@ -124,16 +156,13 @@ class JPEGFile():
                 length = unpack(">H", self.__fs.read(2))[0] - 2
                 data = self.__fs.read(length)
                 self.__app = JFIFHeader(data)
-                print(self.__app)
             elif segid == JPEGSegment.DQT:
                 length = unpack(">H", self.__fs.read(2))[0] - 2
                 data = self.__fs.read(length)
                 bytesread = 0
                 while bytesread < length:
                     table = QuantizationTable(data)
-                    print(table)
                     self.__quantizationtables.append(table)
-                    table.ToJSON("output/{}_{}.json".format(table.TableType, table.Id))
                     bytesread += table.bytesread
             elif segid == JPEGSegment.SOF0:
                 length = unpack(">H", self.__fs.read(2))[0] - 2
@@ -151,7 +180,6 @@ class JPEGFile():
                     elif table.TableType == HuffmanTableType.AC:
                         self.ACHuffmanTables.append(table)
                     bytesread += table.bytesread
-                    table.ToJSON("output/{}_{}.json".format(table.TableType, table.Id))
             elif segid == JPEGSegment.DRI:
                 length = unpack(">H", self.__fs.read(2))[0] - 2
                 data = self.__fs.read(length)
@@ -161,7 +189,9 @@ class JPEGFile():
                 data = self.__fs.read(length)
                 self.__sos = StartOfScan(data)
                 print(self.__sos)
-                self.Decode()
+                scanlength = self.__flen - self.__fs.tell() - 2
+                scandata = self.__fs.read(scanlength)
+                self.Decode(scandata)
             elif segid == JPEGSegment.EOI:
                 print("End of Image")
             else:
@@ -170,9 +200,7 @@ class JPEGFile():
                 self.__fs.seek(length, 1)
             code = self.__fs.read(2)
     
-    def Decode(self):
-        datalength = self.__flen - self.__fs.tell() - 2
-        data = self.__fs.read(datalength)
+    def Decode(self, data):
         buffer = BitBuffer(data)
         prevDCs = {t: 0 for t in self.__sos.Components}
         sof = self.__sof
@@ -283,10 +311,20 @@ class JPEGFile():
             os.mkdir("output")
         image.save('output/test.bmp', format="BMP")
         image.show()
-
         self.__fs.seek(-2, 2)
 
+    def ToJSON(self, filename):
+        jsondic = {
+            "APP0": self.__app.ToDict(),
+            "DHT": [h.ToDict() for h in self.DCHuffmanTables] + [h.ToDict() for h in self.ACHuffmanTables],
+            "DQT": [q.ToDict() for q in self.__quantizationtables],
+            "DRI": self.__dri,
+            "SOF": self.__sof.ToDict(),
+            "SOS": self.__sos.ToDict()
+        }
+        with open(filename, "w") as f:
+            dump(jsondic, f, indent=4)
 
 if __name__ == "__main__":
-    import cProfile
-    cProfile.run('j = JPEGFile("input/test.jpg")', filename="output/stats.prof")
+    j = JFIFFile("input/test.jpg")
+    j.ToJSON("input/config.json")

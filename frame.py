@@ -1,5 +1,4 @@
 from struct import unpack
-from json import load
 
 class FrameComponent():
     def __init__(self, bytes=None, dict=None):
@@ -24,6 +23,14 @@ class FrameComponent():
         self.SamplingFactorH = dict["SamplingFactorH"]
         self.SamplingFactorV = dict["SamplingFactorV"]
         self.QuantizationId = dict["QuantizationId"]
+
+    def ToDict(self):
+        return {
+            "Id": self.Id,
+            "SamplingFactorH": self.SamplingFactorH,
+            "SamplingFactorV": self.SamplingFactorV,
+            "QuantizationId": self.QuantizationId
+        }
 
     def __repr__(self):
         return "Id: {} Sampling Factor {}x{} Quantization Table Id {}".format(
@@ -54,14 +61,20 @@ class StartOfFrame():
             data = bytes[6+(3*i):9+(3*i)]
             self.Components[componentkeys[i]] = FrameComponent(data)
 
-    def FromJSON(self, filename):
-        with open(filename, "r") as f:
-            jsondic = load(f)
-        self.Precision = jsondic["Precision"]
-        self.Height = jsondic["Height"]
-        self.Width = jsondic["Width"]
-        for k, v in jsondic["Components"]:
+    def FromDict(self, dict):
+        self.Precision = dict["Precision"]
+        self.Height = dict["Height"]
+        self.Width = dict["Width"]
+        for k, v in dict["Components"]:
             self.Components[k] = FrameComponent(dict=v)
+
+    def ToDict(self):
+        return {
+            "Precision": self.Precision,
+            "Height": self.Height,
+            "Width": self.Width,
+            "Components": {k: v.ToDict() for k, v in self.Components.items()}
+        }
 
     @property
     def MaxV(self):

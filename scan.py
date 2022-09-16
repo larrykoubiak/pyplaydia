@@ -1,5 +1,4 @@
 from struct import unpack
-from json import load
 
 class ScanComponent():
     def __init__(self, bytes=None, dict=None):
@@ -22,6 +21,13 @@ class ScanComponent():
         self.HuffmanACTable = dict["HuffmanACTable"]
         self.HuffmanDCTable = dict["HuffmanDCTable"]
 
+    def ToDict(self):
+        return {
+            "Id": self.Id,
+            "HuffmanACTable": self.HuffmanACTable,
+            "HuffmanDCTable": self.HuffmanDCTable
+        }
+
     def __repr__(self):
         return "Id: {} Huffman DC {} AC {}".format(
             self.Id,
@@ -41,11 +47,12 @@ class StartOfScan():
         for i in range(nbcomponents):
             self.Components[componentkeys[i]] = ScanComponent(bytes[1+(2*i):3+(2*i)])
 
-    def FromJSON(self, filename):
-        with open(filename, "r") as f:
-            jsondic = load(f)
-        for k, v in jsondic.items():
+    def FromDict(self, dict):
+        for k, v in dict.items():
             self.Components[k] = ScanComponent(dict=v)
+
+    def ToDict(self):
+        return {k: v.ToDict() for k, v in self.Components.items()}
 
     def __repr__(self):
         result = "SOS"

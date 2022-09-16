@@ -2,7 +2,6 @@ from heapq import heappop, heappush
 from graphviz import Graph, Digraph
 from bitbuffer import BitBuffer
 import os
-from json import load, dump
 from enum import Enum
 
 class HuffmanTableType(Enum):
@@ -33,7 +32,7 @@ class HuffmanNode:
         return "'%s': %d" % (self.value, self.freq)
 
 class Huffman:
-    def __init__(self, bytes=None, filename = None):
+    def __init__(self, bytes=None, dict = None):
         self.Id = None
         self.TableType = None
         self.bytesread = 0
@@ -42,8 +41,8 @@ class Huffman:
         self.reverse_codes = {}
         if bytes is not None:
             self.FromBytes(bytes)
-        elif filename is not None:
-            self.FromJSON(filename)
+        elif dict is not None:
+            self.FromDict(dict)
     
     def FromString(self, input_string):
         frequencies = {}
@@ -104,11 +103,11 @@ class Huffman:
                     node = node.right
             node.value = v
 
-    def FromJSON(self, filename):
+    def FromDict(self, dict):
+        self.Id = dict["Id"]
+        self.TableType = HuffmanTableType(dict["TableType"])
         self.root = HuffmanNode(0)
-        with open(filename, "r") as f:
-            jsondic = load(f)
-        for entry in jsondic:
+        for entry in dict["Table"]:
             node = self.root
             for i in range(entry["len"]):
                 b =  entry["binary"][i]
@@ -122,13 +121,13 @@ class Huffman:
                     node = node.right
             node.value = entry["value"]
 
-    def ToJSON(self, filename):
-        jsondic = []
+    def ToDict(self):
         self.__traversetree(self.root, "")
-        for k, v in self.reverse_codes.items():
-            jsondic.append({"len":len(k), "code": int(k,2), "binary": k, "value": v, "hex": "{:02X}".format(v)})
-        with open(filename, "w") as f:
-            dump(jsondic, f, indent=4)
+        return {
+            "Id": self.Id,
+            "TableType": self.TableType.value,
+            "Table": [{"len":len(k), "code": int(k,2), "binary": k, "value": v, "hex": "{:02X}".format(v)} for k, v in self.reverse_codes.items()]
+        }
 
     def __traversetree(self, node, code):
         if node is None:
