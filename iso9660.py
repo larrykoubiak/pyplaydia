@@ -333,7 +333,7 @@ class ISOImage():
 if __name__ == '__main__':
     with open("output/000/frame_0000.bin", "rb") as f:
         scandata = f.read()
-    with open("input/config.json", "r") as f:
+    with open("config.json", "r") as f:
         config = load(f)
     j = JFIFFile(dict=config)
     j.Decode(scandata[0x29:])
