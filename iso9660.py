@@ -243,6 +243,8 @@ class ISOImage():
         pcms = []
         sh = self.__imagestream.Sectors[sectorId]
         while not (sh.Submode & Submodes.EOF):
+            if (sh.Submode & Submodes.Data and sh.Submode & Submodes.EOR):
+                filecounter += 1
             if (sh.Submode & Submodes.Audio):
                 s = self.__imagestream.ReadSector(sectorId)
                 for sg in range(18):
@@ -262,7 +264,6 @@ class ISOImage():
                     pcms = []
                     prev1 = 0
                     prev2 = 0
-                    filecounter +=1
                     if limit > 0 and filecounter >= limit:
                         break
             sectorId +=1
