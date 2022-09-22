@@ -7,6 +7,7 @@ from huffman import Huffman, HuffmanTableType
 from frame import StartOfFrame, FrameComponent
 from scan import StartOfScan, ScanComponent
 from PIL import Image
+import logging
 import os
 
 def clamp(val, minval, maxval):
@@ -206,7 +207,6 @@ class JFIFFile():
                 length = unpack(">H", self.__fs.read(2))[0] - 2
                 data = self.__fs.read(length)
                 self.__sos = StartOfScan(data)
-                print(self.__sos)
                 scanlength = self.__flen - self.__fs.tell() - 2
                 self.scandata = self.__fs.read(scanlength)
             elif segid == JPEGSegment.EOI:
@@ -243,6 +243,12 @@ class JFIFFile():
         }
 
     def Decode(self, buffer, filename=None):
+        log = logging.getLogger()
+        log.setLevel(logging.DEBUG)
+        logpath = filename.replace(".bmp",".log")
+        filelog = logging.FileHandler(logpath, "w", encoding="utf-8")
+        filelog.setLevel(logging.DEBUG)
+        log.addHandler(filelog)
         prevDCs = {t: 0 for t in self.__sos.Components}
         sof = self.__sof
         sos = self.__sos
@@ -256,18 +262,20 @@ class JFIFFile():
             self.__buffers[ctype] = YUVBuffer(stride, height)
         totalmcu = sof.MCUColumns * sof.MCURows
         for mcui in range(totalmcu):
-            component : FrameComponent
+            log.info("*" * 48 + "\nMCU {}".format(mcui))
             if self.__dri > 0 and (mcui % self.__dri) == 0 and buffer.index > 0:
                 for k, v in prevDCs.items():
                     prevDCs[k] = 0
                 buffer.gotonextbyte()
                 code = buffer.readint16()
                 if (code - 0xFFD0) < 8:
-                    print("hit reset {}".format(code - 0xFFD0))
+                    log.info("hit reset {}".format(code - 0xFFD0))
             for ctype, sc  in sos.Components.items():
+                log.info("\t" + "-" * 40 + "\n\tComponent {}".format(ctype))
                 fc : FrameComponent = sof.Components[ctype]
                 for v in range(fc.SamplingFactorV):
                     for h in range(fc.SamplingFactorH):
+                        log.info("\t\t" + "v: {} h: {} start index: {:04X} bit: {}".format(v, h, buffer.index, buffer.pos))
                         ## Huffman DC Decoding
                         DCTable = self.DCHuffmanTables[sc.HuffmanDCTable]
                         lnDC = DCTable.DecodeChar(buffer)
@@ -278,8 +286,11 @@ class JFIFFile():
                             valDC = 0
                         else:
                             valDC = buffer.readbits(lnDC)
+                            unsignedDC = valDC
                             if valDC < (1 << (lnDC-1)):
                                 valDC = valDC - (1 << lnDC) + 1
+                            log.debug("\t\t\tlnDC: {} valDC unsigned: {} signed: {} actual: {}".format(
+                                lnDC, unsignedDC, valDC, valDC + prevDCs[ctype]))
                         valDC += prevDCs[ctype]
                         temp_array[0] = valDC
                         prevDCs[ctype] = valDC
@@ -290,23 +301,43 @@ class JFIFFile():
                             ## RLE decoding
                             lnAC = ACTable.DecodeChar(buffer)
                             if lnAC is None or lnAC == 0:
+                                log.debug("\t\t\tlnAC: {} lnZero: {} lnVal: {} valAC Unsigned: {} Signed: {}".format(
+                                    lnAC, 0, 0, 0, 0))
                                 break
                             else:
                                 lnZero = lnAC >> 4
                                 lnVal = lnAC & 0xF
-                                valAC = buffer.readbits(lnVal)
                                 if lnVal <= 0:
                                     valAC = 0
                                 else:
+                                    valAC = buffer.readbits(lnVal)
+                                    unsignedAC = valAC
                                     index += lnZero
                                     if valAC < (1 << (lnVal-1)):
                                         valAC = valAC - (1 << lnVal) + 1
                                     if index < 64:
                                         temp_array[index] = valAC
+                                log.debug("\t\t\tlnAC: {} lnZero: {} lnVal: {} valAC Unsigned: {} Signed: {}".format(
+                                    lnAC, lnZero, lnVal, unsignedAC, valAC))
                             index += 1
                         qtable = self.__quantizationtables[fc.QuantizationId]
-                        temp_array = qtable.Unzigzag(temp_array)
-                        du = qtable.IDCT.idct2d8x8(temp_array)
+                        uz = qtable.Unzigzag(temp_array)
+                        qu = uz[:]
+                        for i in range(64):
+                            qu[i] = (qu[i] * qtable.IDCT.qtab[i]) >> FIX_PRECISION
+                        du = qtable.IDCT.idct2d8x8(uz[:])
+                        logstr= "\t\t\t{:41}|{:42}|{:42}|{:41}\n".format("-" * 41,"-" * 42,"-" * 42,"-" * 41)
+                        logstr+= "\t\t\t{:40} | {:40} | {:40} | {:40}\n".format("before zigzag","after zigzag", "unquantized", "idct")
+                        logstr+= "\t\t\t{:41}|{:42}|{:42}|{:41}\n".format("-" * 41,"-" * 42,"-" * 42,"-" * 41)
+                        for y in range(8):
+                            logstr+= "\t\t\t{:40} | {:40} | {:40} | {:40}\n".format(
+                                "".join(["{:5}".format(temp_array[(y * 8) + x]) for x in range(8)]),
+                                "".join(["{:5}".format(uz[(y * 8) + x]) for x in range(8)]),
+                                "".join(["{:5}".format(qu[(y * 8) + x]) for x in range(8)]),
+                                "".join(["{:5}".format(du[(y * 8) + x] >> FIX_PRECISION) for x in range(8)]),
+                            )
+                        logstr+= "\t\t\t{:41}|{:42}|{:42}|{:41}\n".format("-" * 41,"-" * 42,"-" * 42,"-" * 41)
+                        log.info(logstr)
                         yuvbuf: YUVBuffer = self.__buffers[ctype]
                         x = int(((mcui % sof.MCUColumns) * sof.MCUWidth + h * 8) * fc.SamplingFactorH / maxh)
                         y = int((int(mcui / sof.MCUColumns) * sof.MCUHeight + v * 8) * fc.SamplingFactorV / maxv)
@@ -352,10 +383,12 @@ class JFIFFile():
         if not os.path.exists(outputfolder):
             os.makedirs(outputfolder, exist_ok=True)
         image.save(filename, format="BMP")
+        for handler in log.handlers[:]:
+            log.removeHandler(handler)
 
 if __name__ == "__main__":
     from json import dump
-    j = JFIFFile("input/test.jpg")
-    j.Decode(BitBuffer(j.scandata))
+    j = JFIFFile("input/test2.jpg")
+    j.Decode(BitBuffer(j.scandata),"output/test.bmp")
     with open("input/config.json", "w") as f:
         dump(j.ToDict(), f, indent=4)
