@@ -142,6 +142,22 @@ class JFIFFile():
         elif dict is not None:
             self.FromDict(dict)
 
+    @property
+    def APP(self):
+        return self.__app
+
+    @property
+    def DQT(self):
+        return self.__quantizationtables
+
+    @property
+    def SOF(self):
+        return self.__sof
+
+    @property
+    def SOS(self):
+        return self.__sos
+
     def FromFile(self, filename):
         self.__fs = open(filename, 'rb')
         self.__fs.seek(0,2)
@@ -226,8 +242,7 @@ class JFIFFile():
             "SOS": self.__sos.ToDict()
         }
 
-    def Decode(self, data):
-        buffer = BitBuffer(data)
+    def Decode(self, buffer, filename=None):
         prevDCs = {t: 0 for t in self.__sos.Components}
         sof = self.__sof
         sos = self.__sos
@@ -333,14 +348,14 @@ class JFIFFile():
             ySrc -= sof.Width
             ySrc += yBuf.stride
         image = Image.frombytes("RGB", (self.__sof.Width, self.__sof.Height), bytes(imagedata))
-        if not os.path.exists("output"):
-            os.mkdir("output")
-        image.save('output/test.bmp', format="BMP")
-        image.show()
+        outputfolder = os.path.dirname(filename)
+        if not os.path.exists(outputfolder):
+            os.makedirs(outputfolder, exist_ok=True)
+        image.save(filename, format="BMP")
 
 if __name__ == "__main__":
     from json import dump
     j = JFIFFile("input/test.jpg")
-    j.Decode(j.scandata)
+    j.Decode(BitBuffer(j.scandata))
     with open("input/config.json", "w") as f:
         dump(j.ToDict(), f, indent=4)

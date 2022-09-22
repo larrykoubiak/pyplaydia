@@ -3,10 +3,8 @@ from enum import Enum, Flag, auto
 from filestream import Imagestream
 from sector import Submodes
 from adpcm import ADPCMBlock
-from jpeg import JFIFFile
 from struct import pack, unpack
 from datetime import datetime, timezone, timedelta
-from json import load
 import wave
 
 
@@ -329,12 +327,4 @@ class ISOImage():
 
     @property
     def Files(self):
-        return [f for f in self.__rootDirectory.Children if not (f.FileFlags & FileFlags.Directory)] 
-
-if __name__ == '__main__':
-    with open("output/000/frame_0000.bin", "rb") as f:
-        scandata = f.read()
-    with open("config.json", "r") as f:
-        config = load(f)
-    j = JFIFFile(dict=config)
-    j.Decode(scandata[0x29:])
+        return [f for f in self.__rootDirectory.Children if not (f.FileFlags & FileFlags.Directory)]
