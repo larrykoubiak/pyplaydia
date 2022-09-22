@@ -278,31 +278,32 @@ class JFIFFile():
                         log.info("\t\t" + "v: {} h: {} start index: {:04X} bit: {}".format(v, h, buffer.index, buffer.pos))
                         ## Huffman DC Decoding
                         DCTable = self.DCHuffmanTables[sc.HuffmanDCTable]
-                        lnDC = DCTable.DecodeChar(buffer)
+                        fmtstr = "\t\t\tlnDC code: {:>16} val: {:6} prevDC: {:5} DCVal: {:5} DCbits: {:>16} DC: {:6}"
+                        lnDC, code = DCTable.DecodeChar(buffer)
                         if lnDC is None:
                             break
                         temp_array = [0] * 64
                         if lnDC == 0:
                             valDC = 0
+                            unsignedDC ="0"
                         else:
                             valDC = buffer.readbits(lnDC)
-                            unsignedDC = valDC
+                            unsignedDC = "{:016b}".format(valDC)[-lnDC:]
                             if valDC < (1 << (lnDC-1)):
                                 valDC = valDC - (1 << lnDC) + 1
-                            log.debug("\t\t\tlnDC: {} valDC unsigned: {} signed: {} actual: {}".format(
-                                lnDC, unsignedDC, valDC, valDC + prevDCs[ctype]))
+                        log.debug(fmtstr.format(code, lnDC, prevDCs[ctype], valDC, unsignedDC , valDC + prevDCs[ctype]))
                         valDC += prevDCs[ctype]
                         temp_array[0] = valDC
                         prevDCs[ctype] = valDC
                         ## Huffman AC Decoding
                         ACTable = self.ACHuffmanTables[sc.HuffmanACTable]
                         index = 1
+                        fmtstr = "\t\t\tlnAC code: {:>16} val: {:6} lnZero: {:5} lnVal: {:5} ACbits: {:>16} AC: {:6}"
                         while index < 64:
                             ## RLE decoding
-                            lnAC = ACTable.DecodeChar(buffer)
+                            lnAC, code = ACTable.DecodeChar(buffer)
                             if lnAC is None or lnAC == 0:
-                                log.debug("\t\t\tlnAC: {} lnZero: {} lnVal: {} valAC Unsigned: {} Signed: {}".format(
-                                    lnAC, 0, 0, 0, 0))
+                                log.debug(fmtstr.format(code, 0, 0, 0, "0", 0))
                                 break
                             else:
                                 lnZero = lnAC >> 4
@@ -311,14 +312,13 @@ class JFIFFile():
                                     valAC = 0
                                 else:
                                     valAC = buffer.readbits(lnVal)
-                                    unsignedAC = valAC
+                                    unsignedAC = "{:016b}".format(valAC)[-lnVal:]
                                     index += lnZero
                                     if valAC < (1 << (lnVal-1)):
                                         valAC = valAC - (1 << lnVal) + 1
                                     if index < 64:
                                         temp_array[index] = valAC
-                                log.debug("\t\t\tlnAC: {} lnZero: {} lnVal: {} valAC Unsigned: {} Signed: {}".format(
-                                    lnAC, lnZero, lnVal, unsignedAC, valAC))
+                                log.debug(fmtstr.format(code, lnAC, lnZero, lnVal, unsignedAC, valAC))
                             index += 1
                         qtable = self.__quantizationtables[fc.QuantizationId]
                         uz = qtable.Unzigzag(temp_array)
@@ -326,17 +326,17 @@ class JFIFFile():
                         for i in range(64):
                             qu[i] = (qu[i] * qtable.IDCT.qtab[i]) >> FIX_PRECISION
                         du = qtable.IDCT.idct2d8x8(uz[:])
-                        logstr= "\t\t\t{:41}|{:42}|{:42}|{:41}\n".format("-" * 41,"-" * 42,"-" * 42,"-" * 41)
-                        logstr+= "\t\t\t{:40} | {:40} | {:40} | {:40}\n".format("before zigzag","after zigzag", "unquantized", "idct")
-                        logstr+= "\t\t\t{:41}|{:42}|{:42}|{:41}\n".format("-" * 41,"-" * 42,"-" * 42,"-" * 41)
+                        logstr= "\t\t\t " + "_" * 171 + " \n"
+                        logstr+= "\t\t\t| {:40} | {:40} | {:40} | {:40} |\n".format("before zigzag","after zigzag", "unquantized", "idct")
+                        logstr+= "\t\t\t|{:42}|{:42}|{:42}|{:42}|\n".format("-" * 42,"-" * 42,"-" * 42,"-" * 42)
                         for y in range(8):
-                            logstr+= "\t\t\t{:40} | {:40} | {:40} | {:40}\n".format(
+                            logstr+= "\t\t\t| {:40} | {:40} | {:40} | {:40} |\n".format(
                                 "".join(["{:5}".format(temp_array[(y * 8) + x]) for x in range(8)]),
                                 "".join(["{:5}".format(uz[(y * 8) + x]) for x in range(8)]),
                                 "".join(["{:5}".format(qu[(y * 8) + x]) for x in range(8)]),
                                 "".join(["{:5}".format(du[(y * 8) + x] >> FIX_PRECISION) for x in range(8)]),
                             )
-                        logstr+= "\t\t\t{:41}|{:42}|{:42}|{:41}\n".format("-" * 41,"-" * 42,"-" * 42,"-" * 41)
+                        logstr+= "\t\t\t|{:42}|{:42}|{:42}|{:42}|\n".format("_" * 41,"_" * 42,"_" * 42,"_" * 42)
                         log.info(logstr)
                         yuvbuf: YUVBuffer = self.__buffers[ctype]
                         x = int(((mcui % sof.MCUColumns) * sof.MCUWidth + h * 8) * fc.SamplingFactorH / maxh)
@@ -388,7 +388,7 @@ class JFIFFile():
 
 if __name__ == "__main__":
     from json import dump
-    j = JFIFFile("input/test2.jpg")
+    j = JFIFFile("input/test.jpg")
     j.Decode(BitBuffer(j.scandata),"output/test.bmp")
     with open("input/config.json", "w") as f:
         dump(j.ToDict(), f, indent=4)

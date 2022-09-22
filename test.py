@@ -16,7 +16,7 @@ def main(inputfile):
             j.SOF.cache = {}
             j.SOF.Components["Y"].SamplingFactorV = ysamplingfactorv
             j.SOF.Components["Y"].SamplingFactorH = ysamplingfactorh
-            for index in tqdm(range(0x28,0xFF)):
+            for index in tqdm(range(0x28,0x30)):
                 buffer.index = index
                 buffer.pos = 0
                 filename = "output/test/factor_v{}_h{}/index_{:04}.bmp".format(ysamplingfactorv, ysamplingfactorh, index)

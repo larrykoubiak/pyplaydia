@@ -161,10 +161,12 @@ class Huffman:
     
     def DecodeChar(self, buffer):
         node = self.root
+        code = ""
         while node is not None and not node.IsLeaf() and not buffer.EOF:
             b = buffer.pop()
+            code += str(b)
             node = node.left if b == 0 else node.right
-        return None if node is None or node.value == 0xFF else node.value
+        return None if node is None or node.value == 0xFF else node.value, code
 
     
     def DrawTree(self, parent=None, graph=None, code = "", filename="test.gv"):
