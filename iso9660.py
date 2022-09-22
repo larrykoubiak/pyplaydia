@@ -273,7 +273,7 @@ class ISOImage():
         bytes = bytearray()
         sh = self.__imagestream.Sectors[sectorId]
         while not (sh.Submode & Submodes.EOF):
-            if not (sh.Submode & Submodes.Audio):
+            if sh.Submode & Submodes.Data:
                 s = self.__imagestream.ReadSector(sectorId)
                 bytes += s.Data
                 if (sh.Submode & Submodes.EOR):
@@ -297,7 +297,7 @@ class ISOImage():
         bytes = bytearray()
         sh = self.__imagestream.Sectors[sectorId]
         while not (sh.Submode & Submodes.EOF):
-            if not (sh.Submode & Submodes.Audio):
+            if sh.Submode & Submodes.Data:
                 s = self.__imagestream.ReadSector(sectorId)
                 if s.Data[0] == 0xF3:
                     pass
