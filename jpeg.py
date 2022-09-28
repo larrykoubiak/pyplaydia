@@ -243,9 +243,12 @@ class JFIFFile():
         }
 
     def Decode(self, buffer, filename=None):
+        outputfolder = os.path.dirname(filename)
+        if not os.path.exists(outputfolder):
+            os.makedirs(outputfolder, exist_ok=True)
         log = logging.getLogger()
         log.setLevel(logging.DEBUG)
-        logpath = filename.replace(".bmp",".log")
+        logpath = filename.replace(".png",".log")
         filelog = logging.FileHandler(logpath, "w", encoding="utf-8")
         filelog.setLevel(logging.DEBUG)
         log.addHandler(filelog)
@@ -379,16 +382,13 @@ class JFIFFile():
             ySrc -= sof.Width
             ySrc += yBuf.stride
         image = Image.frombytes("RGB", (self.__sof.Width, self.__sof.Height), bytes(imagedata))
-        outputfolder = os.path.dirname(filename)
-        if not os.path.exists(outputfolder):
-            os.makedirs(outputfolder, exist_ok=True)
-        image.save(filename, format="BMP")
+        image.save(filename)
         for handler in log.handlers[:]:
             log.removeHandler(handler)
 
 if __name__ == "__main__":
     from json import dump
     j = JFIFFile("input/test.jpg")
-    j.Decode(BitBuffer(j.scandata),"output/test.bmp")
+    j.Decode(BitBuffer(j.scandata),"output/test.png")
     with open("input/config.json", "w") as f:
         dump(j.ToDict(), f, indent=4)
