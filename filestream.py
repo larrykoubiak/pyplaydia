@@ -6,10 +6,15 @@ from pathlib import Path
 
 class Filestream():
     def __init__(self, filepath=None):
+        self.__filename = os.path.basename(filepath)
         self.__stream = open(filepath,'rb')
         self.__stream.seek(0, 2)
         self.__length = self.__stream.tell()
         self.__stream.seek(0,0)
+
+    @property
+    def Filename(self):
+        return self.__filename
 
     @property
     def Stream(self):
@@ -46,6 +51,16 @@ class Imagestream():
                     )
                     self.__streams.append(filestream)
 
+    def __writecue(self, path, name, streams):
+        filepath = os.path.join(path, "{}.cue".format(name))
+        with open(filepath, "w") as f:
+            for i in range(len(streams)):
+                s = streams[i]
+                f.write('FILE "{}" BINARY\n'.format(s["filename"]))
+                f.write('  TRACK {:02} MODE2/2352\n'.format(i+1))
+                f.write('    INDEX 01 00:00:00\n')
+
+
     def __readsectors(self):
         self.__sectors = []
         for filestreamid in range(len(self.__streams)):
@@ -77,13 +92,29 @@ class Imagestream():
                 bytesread += remainderlen
         return bytesread
 
-    def ReadSector(self, LBA):
+    def ReadSector(self, LBA) -> Sector:
         sector = self.__sectors[LBA]
         fs = self.__streams[sector.FileStreamId]
         sectorlen = 2324 if (sector.Submode & Submodes.Form) else 2048
+        ecclen = 2352 - sectorlen - 24
         fs.Stream.seek(sector.FileStreamOffset + 24, 0)
         sector.Data = fs.Stream.read(sectorlen)
+        sector.ECC = fs.Stream.read(ecclen)
         return sector
+
+    def Write(self, path, name):
+        outputstreams = []
+        for i in range(len(self.__streams)):
+            s = self.__streams[i]
+            filename = "{} (Track {:02}).bin".format(name, i+1)
+            of = {"filename": filename, "stream": open(os.path.join(path, filename), "wb")}
+            outputstreams.append(of)
+        for i in range(len(self.Sectors)):
+            if self.Sectors[i].Data is None:
+                self.Sectors[i] = self.ReadSector(i)
+            s = self.Sectors[i]
+            outputstreams[s.FileStreamId]["stream"].write(s.ToBytes())
+        self.__writecue(path, name, outputstreams)
 
     @property
     def Streams(self):

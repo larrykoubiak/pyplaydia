@@ -32,6 +32,40 @@ class Sector():
         self.__submode = Submodes(header[7])
         self.__coding = Codings(header[8])
         self.__data = None
+        self.__ecc = None
+        self.__modified = False
+
+    def insertData(self, data, offset):
+        sectorlen = 2324 if (self.Submode & Submodes.Form) else 2048
+        newdata = list(self.Data[:])
+        newdata[offset:offset] = data
+        popped = newdata[sectorlen:]
+        self.Data = b''.join([i.to_bytes(1, 'little') for i in newdata[:sectorlen]])
+        self.__modified = True
+        return popped
+
+    def ToBytes(self):
+        bytes = bytearray(
+            pack(
+                "<12sBBBBBBBBBBBB",
+                self.__syncpattern,
+                self.__minute,
+                self.__second,
+                self.__block,
+                self.__mode, 
+                self.__filenumber,
+                self.__channel,
+                self.__submode.value,
+                self.__coding.value,
+                self.__filenumber,
+                self.__channel,
+                self.__submode.value,
+                self.__coding.value
+            )
+        )
+        bytes.extend(self.Data)
+        bytes.extend(self.ECC)
+        return bytes
 
     @property
     def FileStreamId(self):
@@ -84,6 +118,18 @@ class Sector():
     @Data.setter
     def Data(self, value):
         self.__data = value
+
+    @property
+    def ECC(self):
+        return self.__ecc
+
+    @ECC.setter
+    def ECC(self, value):
+        self.__ecc = value
+
+    @property
+    def Modified(self):
+        return self.__modified
 
     def __repr__(self):
         formatstr = '<Sector Mode {} File {} Channel {} {} {}>'

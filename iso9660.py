@@ -41,6 +41,9 @@ class XAFlags(Flag):
     Directory = 0x8000
 
 
+def TimeToLBA(minutes, seconds, block):
+    return (minutes * 60 * 75) + ((seconds-2) * 75) + block
+
 class ISO9660TextDate():
     def __init__(self, data):
         temp = unpack("4s2s2s2s2s2s2sb", data)
@@ -320,6 +323,25 @@ class ISOImage():
             sectorId += 1
             sh = self.__imagestream.Sectors[sectorId]
 
+    def PatchFrame(self, sectorId, data, offset=0x28):
+        o = offset
+        sid = sectorId
+        shiftdata = data
+        s = self.__imagestream.ReadSector(sectorId)
+        fid = s.FileStreamId
+        while s.Data[0] != 0xF2:
+            if not(s.Submode & Submodes.Audio) and s.Data[0] == 0xF1:
+                shiftdata = s.insertData(shiftdata, o)
+                o = 1
+            sid += 1
+            # skip audio sectors
+            while (self.__imagestream.Sectors[sid].Submode & Submodes.Audio):
+                sid +=1
+            s = self.__imagestream.ReadSector(sid)
+        s.insertData(shiftdata, 0x23) ## supposed end of F2 header, ignored popped values that are probably FF
+        
+    def Write(self, path, name):
+        self.__imagestream.Write(path, name)
 
     @property
     def VolumeDescriptors(self):
