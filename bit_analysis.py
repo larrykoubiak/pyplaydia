@@ -32,21 +32,27 @@ def find_repeating_patterns(binary_str, min_pattern_length=8, max_pattern_length
 
     return pattern_length_counts
 
-def print_binary_dump(binstr, columns):
+def binary_file_to_text(file_path, columns):
+    result = ""
+    with open(file_path, "rb") as f:
+        byte_data = f.read()
+    dest_path = file_path.replace('.bin','_bitmap.txt')
+    binary_str = ''.join([format(byte, '08b') for byte in byte_data])
     rowlength = columns * 8
-    for row in range(0,int(len(binstr)/rowlength)):
+    # Convert to binary
+    for row in range(0,int(len(binary_str)/rowlength)):
         offset = row * columns
         rowstr = "{:08x} ".format(offset)
         for col in range(columns):
             start = (offset * 8) + (col * 8)
-            if start <len(binstr):
-                rowstr += binstr[start: start + 8]
-        print(rowstr)
+            if start <len(binary_str):
+                rowstr += binary_str[start: start + 8]
+        result += rowstr + "\n"
+    return result
 
 def binary_file_to_image(file_path, columns):
     with open(file_path, "rb") as f:
         byte_data = f.read()
-
     # Convert to binary
     binary_str = ''.join([format(byte, '08b') for byte in byte_data])
     img_width = columns * 8
@@ -71,19 +77,19 @@ def binary_file_to_image(file_path, columns):
 
     return img
 
-def compile_to_gif(input_folder, output_gif_name, columns, duration=100):
-    # Gather all .bin files
-    files = [f for f in os.listdir(input_folder) if f.endswith('.bin')]
-    files.sort()  # To make sure they're in order
-
-    # Convert each .bin file to an image
-    images = [binary_file_to_image(os.path.join(input_folder, file), columns) for file in tqdm(files)]
-    
-    # Save as a GIF
-    images[0].save(output_gif_name, save_all=True, append_images=images[1:], duration=duration, loop=0)
-
 if __name__ == "__main__":
-    compile_to_gif('output/001','output/001.gif',32)
+    folder = 'output/frames/001'
+    files = [os.path.join(folder,f) for f in os.listdir(folder) if f.endswith('.bin')]
+    images = []
+    for f in tqdm(files):
+        txt = binary_file_to_text(f, 16)
+        img = binary_file_to_image(f, 16)
+        with open(f.replace('.bin','_bitmap.txt'),'w') as o:
+            o.write(txt)
+        img.save(f.replace('.bin','_bitmap.png'))
+        images.append(img)
+    images[0].save(folder + ".gif", save_all=True, append_images=images[1:], duration=100, loop=0)
+
     # patterns = find_repeating_patterns(binary_str,20,64)
 
     # # for pattern_length in sorted(patterns, reverse=True):

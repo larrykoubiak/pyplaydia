@@ -1,5 +1,6 @@
 from iso9660 import ISOImage
 import argparse
+import os
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Stream extractor of Playdia games")
@@ -15,8 +16,8 @@ if __name__ == "__main__":
     for f in i.Files:
         print(f)
         if args.audio:
-            i.ReadAudio(f, args.destination, args.limit)
+            i.ReadAudio(f, os.path.join(args.destination,"audio"), args.limit)
         if args.video:
-            i.ReadVideo(f, args.destination, args.limit)
+            i.ReadVideo(f, os.path.join(args.destination,"video"), args.limit)
         if args.frame:
-            i.ReadVideoFrames(f, args.destination, args.limit)
+            i.ReadVideoFrames(f, os.path.join(args.destination,"frames"), args.limit)

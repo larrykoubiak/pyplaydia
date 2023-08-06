@@ -256,7 +256,7 @@ class ISOImage():
                 if (sh.Submode & Submodes.EOR):
                     filename = os.path.join(destination, "audio_{:03}.wav".format(filecounter))
                     if not os.path.exists(os.path.dirname(filename)):
-                        os.mkdir(os.path.dirname(filename))
+                        os.makedirs(os.path.dirname(filename), exist_ok=True)
                     wavefile = wave.open(filename, "wb")
                     wavefile.setparams((1, 2, 44100, len(pcms),"NONE","not compressed"))
                     frames = pack(str(len(pcms)) + "h", *pcms)
@@ -308,7 +308,7 @@ class ISOImage():
                     bytes += s.Data
                     filename = os.path.join(destination, "{:03}/frame_{:04}.bin".format(filecounter, framecounter))
                     if not os.path.exists(os.path.dirname(filename)):
-                        os.mkdir(os.path.dirname(filename))
+                        os.makedirs(os.path.dirname(filename),exist_ok=True)
                     with open(filename, "wb") as o:
                         o.write(bytes)
                     bytes = bytearray()
