@@ -1,6 +1,6 @@
 from heapq import heappop, heappush
 from graphviz import Graph, Digraph
-from bitbuffer import BitBuffer
+from jpeg.bitbuffer import BitBuffer
 import os
 from enum import Enum
 

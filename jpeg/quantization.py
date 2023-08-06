@@ -1,4 +1,4 @@
-from idct import IDCT
+from jpeg.idct import IDCT
 from enum import Enum
 
 class QuantizationType(Enum):

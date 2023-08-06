@@ -1,11 +1,11 @@
 from enum import Enum
 from struct import unpack
-from bitbuffer import BitBuffer
-from idct import FIX_PRECISION, FLOAT2FIX
-from quantization import QuantizationTable, QuantizationType
-from huffman import Huffman, HuffmanTableType
-from frame import StartOfFrame, FrameComponent
-from scan import StartOfScan, ScanComponent
+from jpeg.bitbuffer import BitBuffer
+from jpeg.idct import FIX_PRECISION, FLOAT2FIX
+from jpeg.quantization import QuantizationTable, QuantizationType
+from jpeg.huffman import Huffman, HuffmanTableType
+from jpeg.frame import StartOfFrame, FrameComponent
+from jpeg.scan import StartOfScan, ScanComponent
 from PIL import Image
 import logging
 import os

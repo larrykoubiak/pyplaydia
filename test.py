@@ -1,5 +1,5 @@
-from jpeg import JFIFFile
-from bitbuffer import BitBuffer
+from jpeg.jpeg import JFIFFile
+from jpeg.bitbuffer import BitBuffer
 from json import load
 from tqdm import tqdm
 from iso9660 import ISOImage, TimeToLBA
