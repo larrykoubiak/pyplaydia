@@ -32,6 +32,11 @@ class QuantizationTable():
             uz[self.reverse_zigzag[i]] = input_array[i]
         return uz
 
+    def UnzigzagInto(self, input_array, output_array):
+        """Fill output_array with the un-zigzagged values from input_array."""
+        for i in range(64):
+            output_array[self.reverse_zigzag[i]] = input_array[i]
+
     def FromBytes(self, data):
         self.bytesread = 0
         self.TableType = QuantizationType(data[self.bytesread] >> 4)

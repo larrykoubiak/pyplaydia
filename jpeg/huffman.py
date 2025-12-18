@@ -1,8 +1,7 @@
 from heapq import heappop, heappush
-from graphviz import Graph, Digraph
-from jpeg.bitbuffer import BitBuffer
 import os
 from enum import Enum
+from jpeg.bitbuffer import BitBuffer
 
 class HuffmanTableType(Enum):
     DC = 0x00
@@ -73,35 +72,20 @@ class Huffman:
         self.Id = bytes[self.bytesread] & 0x0F
         self.TableType = HuffmanTableType(bytes[self.bytesread] >> 4)
         self.bytesread += 1
-        codes = {}
-        code = 0
         counts = []
-        for i in range(16):
+        for _ in range(16):
             counts.append(bytes[self.bytesread])
             self.bytesread += 1
-        for i in range(16):
-            for _ in range(counts[i]):
-                codes[(i+1, code)] = bytes[self.bytesread]
-                code +=1
-                self.bytesread += 1
-            code <<= 1
+
+        code = 0
         self.root = HuffmanNode(0)
-        for k, v in codes.items():
-            node = self.root
-            ln = k[0]
-            code = "{:0" + str(ln) +"b}"
-            code = code.format(k[1])
-            for i in range(ln):
-                b = code[i]
-                if b == "0":
-                    if node.left is None:
-                        node.left = HuffmanNode()
-                    node = node.left
-                elif b == "1":
-                    if node.right is None:
-                        node.right = HuffmanNode()
-                    node = node.right
-            node.value = v
+        for bitlen in range(1, 17):
+            for _ in range(counts[bitlen - 1]):
+                val = bytes[self.bytesread]
+                self.bytesread += 1
+                self.__insert_code(bitlen, code, val)
+                code += 1
+            code <<= 1
 
     def FromDict(self, dict):
         self.Id = dict["Id"]
@@ -138,6 +122,20 @@ class Huffman:
             return
         self.__traversetree(node.left, code + "0")
         self.__traversetree(node.right, code + "1")
+
+    def __insert_code(self, bitlen, code, value):
+        node = self.root
+        for i in range(bitlen - 1, -1, -1):
+            bit = (code >> i) & 1
+            if bit == 0:
+                if node.left is None:
+                    node.left = HuffmanNode()
+                node = node.left
+            else:
+                if node.right is None:
+                    node.right = HuffmanNode()
+                node = node.right
+        node.value = value
             
 
     def Encode(self, string):
@@ -158,23 +156,24 @@ class Huffman:
             decvals.append(val)
             val = self.DecodeChar(buffer)
         return decvals
-    
+
     def DecodeChar(self, buffer):
         node = self.root
-        code = ""
+        pop_bit = buffer.pop
         while node is not None and not node.IsLeaf() and not buffer.EOF:
-            b = buffer.pop()
-            code += str(b)
+            b = pop_bit()
             node = node.left if b == 0 else node.right
-        return None if node is None or node.value == 0xFF else node.value, code
+        return None if node is None or node.value == 0xFF else node.value, None
 
     
     def DrawTree(self, parent=None, graph=None, code = "", filename="test.gv"):
+        try:
+            from graphviz import Graph
+        except ImportError:
+            raise RuntimeError("graphviz is required for DrawTree but is not installed")
+
         node = self.root if parent is None else parent
-        if graph is None:
-            graph = Graph(engine="dot")
-        else:
-            graph = graph
+        graph = Graph(engine="dot") if graph is None else graph
         graph.node("Root" if code =="" else code, '%02X' % node.value if node.IsLeaf() else '')
         if node.left is not None:
             self.DrawTree(node.left, graph, code + "0")

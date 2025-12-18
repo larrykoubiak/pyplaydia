@@ -96,7 +96,7 @@ class JFIFHeader():
         self.DensityV = dict["DensityV"]
         self.ThumbW = dict["ThumbW"]
         self.ThumbH = dict["ThumbH"]
-        self.Thumbdata = dict["ThumbData"]
+        self.Thumbdata = dict["Thumbdata"]
 
     def ToDict(self):
         return {
@@ -129,6 +129,7 @@ class JFIFFile():
     def __init__(self, filename=None, dict=None):
         self.__app = None
         self.__sof = None
+        self.__sof_type = None
         self.__sos = None
         self.__dri = 0
         self.__quantizationtables = []
@@ -184,10 +185,32 @@ class JFIFFile():
                     self.__quantizationtables.append(table)
                     bytesread += table.bytesread
             elif segid == JPEGSegment.SOF0:
+                self.__sof_type = segid
                 length = unpack(">H", self.__fs.read(2))[0] - 2
                 data = self.__fs.read(length)
                 self.__sof = StartOfFrame(data)
                 print(self.__sof)
+            elif segid in (
+                JPEGSegment.SOF1,
+                JPEGSegment.SOF2,
+                JPEGSegment.SOF3,
+                JPEGSegment.SOF5,
+                JPEGSegment.SOF6,
+                JPEGSegment.SOF7,
+                JPEGSegment.SOF9,
+                JPEGSegment.SOFA,
+                JPEGSegment.SOFB,
+                JPEGSegment.SOFC,
+                JPEGSegment.SOFD,
+                JPEGSegment.SOFE,
+                JPEGSegment.SOFF,
+            ):
+                # Unsupported frame types (progressive / lossless / arithmetic)
+                self.__sof_type = segid
+                length = unpack(">H", self.__fs.read(2))[0] - 2
+                data = self.__fs.read(length)
+                self.__sof = StartOfFrame(data)
+                print(f"Frame type {segid.name} not supported by this decoder.")
             elif segid == JPEGSegment.DHT:
                 length = unpack(">H", self.__fs.read(2))[0] - 2
                 data = self.__fs.read(length)
@@ -246,17 +269,27 @@ class JFIFFile():
         outputfolder = os.path.dirname(filename)
         if not os.path.exists(outputfolder):
             os.makedirs(outputfolder, exist_ok=True)
-        log = logging.getLogger()
-        log.setLevel(logging.DEBUG)
-        logpath = filename.replace(".png",".log")
-        filelog = logging.FileHandler(logpath, "w", encoding="utf-8")
-        filelog.setLevel(logging.DEBUG)
-        log.addHandler(filelog)
+        if self.__sof_type and self.__sof_type != JPEGSegment.SOF0:
+            raise NotImplementedError(
+                f"Decoder only handles baseline (SOF0). Found {self.__sof_type.name}."
+            )
+        log = logging.getLogger(__name__ + ".decode")
+        log.handlers = []
+        log.propagate = False
+        log.disabled = True
         prevDCs = {t: 0 for t in self.__sos.Components}
         sof = self.__sof
         sos = self.__sos
         maxh = self.__sof.MaxH
         maxv = self.__sof.MaxV
+        # Preallocate per-component buffers to avoid per-block allocations.
+        block_buffers = {
+            ctype: {
+                "coeff": [0] * 64,
+                "dezig": [0] * 64,
+            }
+            for ctype in self.__sof.Components
+        }
         ## create buffers
         c: FrameComponent
         for ctype, c in self.__sof.Components.items():
@@ -264,26 +297,50 @@ class JFIFFile():
             height = int(self.__sof.AlignedHeight * c.SamplingFactorV / maxv)
             self.__buffers[ctype] = YUVBuffer(stride, height)
         totalmcu = sof.MCUColumns * sof.MCURows
+        stop = False
         for mcui in range(totalmcu):
             log.info("*" * 48 + "\nMCU {}".format(mcui))
-            if self.__dri > 0 and (mcui % self.__dri) == 0 and buffer.index > 0:
+            if self.__dri > 0 and mcui > 0 and (mcui % self.__dri) == 0:
                 for k, v in prevDCs.items():
                     prevDCs[k] = 0
                 buffer.gotonextbyte()
-                code = buffer.readint16()
-                if (code - 0xFFD0) < 8:
-                    log.info("hit reset {}".format(code - 0xFFD0))
+                # Skip any 0xFF00 stuffed sequences until we hit a marker.
+                marker = None
+                while buffer.index < len(buffer.Values):
+                    b1 = buffer.Values[buffer.index]
+                    if b1 != 0xFF:
+                        buffer.index += 1
+                        continue
+                    # consume the 0xFF
+                    buffer.index += 1
+                    # skip fill bytes 0xFF
+                    while buffer.index < len(buffer.Values) and buffer.Values[buffer.index] == 0xFF:
+                        buffer.index += 1
+                    if buffer.index >= len(buffer.Values):
+                        break
+                    b2 = buffer.Values[buffer.index]
+                    buffer.index += 1
+                    if b2 == 0x00:
+                        continue  # stuffed 0xFF00, keep looking
+                    marker = (0xFF << 8) | b2
+                    break
+                if marker is None or not (0xFFD0 <= marker <= 0xFFD7):
+                    raise ValueError("Restart interval encountered but restart marker missing or invalid")
             for ctype, sc  in sos.Components.items():
                 log.info("\t" + "-" * 40 + "\n\tComponent {}".format(ctype))
                 fc : FrameComponent = sof.Components[ctype]
                 for v in range(fc.SamplingFactorV):
                     for h in range(fc.SamplingFactorH):
                         log.info("\t\t" + "v: {} h: {} start index: {:04X} bit: {}".format(v, h, buffer.index, buffer.pos))
+                        temp_array = block_buffers[ctype]["coeff"]
+                        for i in range(64):
+                            temp_array[i] = 0
                         ## Huffman DC Decoding
                         DCTable = self.DCHuffmanTables[sc.HuffmanDCTable]
                         fmtstr = "\t\t\tlnDC code: {:>16} val: {:6} prevDC: {:5} DCVal: {:5} DCbits: {:>16} DC: {:6}"
                         lnDC, code = DCTable.DecodeChar(buffer)
                         if lnDC is None:
+                            stop = True
                             break
                         temp_array = [0] * 64
                         if lnDC == 0:
@@ -291,10 +348,14 @@ class JFIFFile():
                             unsignedDC ="0"
                         else:
                             valDC = buffer.readbits(lnDC)
+                            if valDC is None:
+                                stop = True
+                                break
                             unsignedDC = "{:016b}".format(valDC)[-lnDC:]
                             if valDC < (1 << (lnDC-1)):
                                 valDC = valDC - (1 << lnDC) + 1
-                        log.debug(fmtstr.format(code, lnDC, prevDCs[ctype], valDC, unsignedDC , valDC + prevDCs[ctype]))
+                        if not log.disabled:
+                            log.debug(fmtstr.format("" if code is None else code, lnDC, prevDCs[ctype], valDC, unsignedDC , valDC + prevDCs[ctype]))
                         valDC += prevDCs[ctype]
                         temp_array[0] = valDC
                         prevDCs[ctype] = valDC
@@ -305,42 +366,65 @@ class JFIFFile():
                         while index < 64:
                             ## RLE decoding
                             lnAC, code = ACTable.DecodeChar(buffer)
-                            if lnAC is None or lnAC == 0:
-                                log.debug(fmtstr.format(code, 0, 0, 0, "0", 0))
+                            if lnAC is None:
+                                if not log.disabled:
+                                    log.debug(fmtstr.format("" if code is None else code, 0, 0, 0, "0", 0))
+                                stop = True
                                 break
-                            else:
-                                lnZero = lnAC >> 4
-                                lnVal = lnAC & 0xF
-                                if lnVal <= 0:
-                                    valAC = 0
-                                else:
-                                    valAC = buffer.readbits(lnVal)
-                                    unsignedAC = "{:016b}".format(valAC)[-lnVal:]
-                                    index += lnZero
-                                    if valAC < (1 << (lnVal-1)):
-                                        valAC = valAC - (1 << lnVal) + 1
-                                    if index < 64:
-                                        temp_array[index] = valAC
-                                log.debug(fmtstr.format(code, lnAC, lnZero, lnVal, unsignedAC, valAC))
+                            if lnAC == 0:
+                                if not log.disabled:
+                                    log.debug(fmtstr.format("" if code is None else code, lnAC, 0, 0, "0", 0))
+                                break
+
+                            lnZero = lnAC >> 4
+                            lnVal = lnAC & 0xF
+
+                            # ZRL (16 zeros)
+                            if lnZero == 15 and lnVal == 0:
+                                index += 16
+                                if not log.disabled:
+                                    log.debug(fmtstr.format("" if code is None else code, lnAC, lnZero, lnVal, "0", 0))
+                                continue
+
+                            if lnVal == 0:
+                                if not log.disabled:
+                                    log.debug(fmtstr.format("" if code is None else code, lnAC, lnZero, lnVal, "0", 0))
+                                break
+
+                            valAC = buffer.readbits(lnVal)
+                            if valAC is None:
+                                if not log.disabled:
+                                    log.debug(fmtstr.format("" if code is None else code, lnAC, lnZero, lnVal, "0", 0))
+                                stop = True
+                                break
+                            unsignedAC = "{:016b}".format(valAC)[-lnVal:]
+                            index += lnZero
+                            if valAC < (1 << (lnVal-1)):
+                                valAC = valAC - (1 << lnVal) + 1
+                            if index < 64:
+                                temp_array[index] = valAC
+                            if not log.disabled:
+                                log.debug(fmtstr.format("" if code is None else code, lnAC, lnZero, lnVal, unsignedAC, valAC))
                             index += 1
+                        if stop:
+                            break
                         qtable = self.__quantizationtables[fc.QuantizationId]
-                        uz = qtable.Unzigzag(temp_array)
-                        qu = uz[:]
-                        for i in range(64):
-                            qu[i] = (qu[i] * qtable.IDCT.qtab[i]) >> FIX_PRECISION
-                        du = qtable.IDCT.idct2d8x8(uz[:])
-                        logstr= "\t\t\t " + "_" * 171 + " \n"
-                        logstr+= "\t\t\t| {:40} | {:40} | {:40} | {:40} |\n".format("before zigzag","after zigzag", "unquantized", "idct")
-                        logstr+= "\t\t\t|{:42}|{:42}|{:42}|{:42}|\n".format("-" * 42,"-" * 42,"-" * 42,"-" * 42)
-                        for y in range(8):
-                            logstr+= "\t\t\t| {:40} | {:40} | {:40} | {:40} |\n".format(
-                                "".join(["{:5}".format(temp_array[(y * 8) + x]) for x in range(8)]),
-                                "".join(["{:5}".format(uz[(y * 8) + x]) for x in range(8)]),
-                                "".join(["{:5}".format(qu[(y * 8) + x]) for x in range(8)]),
-                                "".join(["{:5}".format(du[(y * 8) + x] >> FIX_PRECISION) for x in range(8)]),
-                            )
-                        logstr+= "\t\t\t|{:42}|{:42}|{:42}|{:42}|\n".format("_" * 41,"_" * 42,"_" * 42,"_" * 42)
-                        log.info(logstr)
+                        dezig = block_buffers[ctype]["dezig"]
+                        qtable.UnzigzagInto(temp_array, dezig)
+                        du = qtable.IDCT.idct2d8x8(dezig)
+                        if not log.disabled:
+                            logstr= "\t\t\t " + "_" * 171 + " \n"
+                            logstr+= "\t\t\t| {:40} | {:40} | {:40} | {:40} |\n".format("before zigzag","after zigzag", "unquantized", "idct")
+                            logstr+= "\t\t\t|{:42}|{:42}|{:42}|{:42}|\n".format("-" * 42,"-" * 42,"-" * 42,"-" * 42)
+                            for y in range(8):
+                                logstr+= "\t\t\t| {:40} | {:40} | {:40} | {:40} |\n".format(
+                                    "".join(["{:5}".format(temp_array[(y * 8) + x]) for x in range(8)]),
+                                    "".join(["{:5}".format(dezig[(y * 8) + x]) for x in range(8)]),
+                                    "".join(["{:5}".format((dezig[(y * 8) + x] * qtable.IDCT.qtab[(y * 8) + x]) >> FIX_PRECISION) for x in range(8)]),
+                                    "".join(["{:5}".format(du[(y * 8) + x] >> FIX_PRECISION) for x in range(8)]),
+                                )
+                            logstr+= "\t\t\t|{:42}|{:42}|{:42}|{:42}|\n".format("_" * 41,"_" * 42,"_" * 42,"_" * 42)
+                            log.info(logstr)
                         yuvbuf: YUVBuffer = self.__buffers[ctype]
                         x = int(((mcui % sof.MCUColumns) * sof.MCUWidth + h * 8) * fc.SamplingFactorH / maxh)
                         y = int((int(mcui / sof.MCUColumns) * sof.MCUHeight + v * 8) * fc.SamplingFactorV / maxv)
@@ -350,6 +434,12 @@ class JFIFFile():
                             yuvbuf.buffer[idst:idst + 8] = du[isrc:isrc + 8]
                             idst += yuvbuf.stride
                             isrc += 8
+                    if stop:
+                        break
+                if stop:
+                    break
+            if stop:
+                break
         imagedata = bytearray(self.__sof.Height * self.__sof.Width * 3)
         ySrc = 0
         iDst = 0
@@ -368,12 +458,23 @@ class JFIFFile():
                 Cb = cbBuf.buffer[cbSrc]
                 Cr = crBuf.buffer[crSrc]
                 Y += 128 << FIX_PRECISION
-                r = clamp(int(Y + (FLOAT2FIX(1.402) * Cr >> FIX_PRECISION) >> FIX_PRECISION),0,255)
-                g = clamp(int(
+                r = int(Y + (FLOAT2FIX(1.402) * Cr >> FIX_PRECISION) >> FIX_PRECISION)
+                g = int(
                         Y -(FLOAT2FIX(0.34414) * Cb >> FIX_PRECISION) - 
                         (FLOAT2FIX(0.71414) * Cr >> FIX_PRECISION) >> FIX_PRECISION)
-                        ,0,255)
-                b = clamp(int(Y + (FLOAT2FIX(1.772) * Cb >> FIX_PRECISION) >> FIX_PRECISION),0,255)
+                b = int(Y + (FLOAT2FIX(1.772) * Cb >> FIX_PRECISION) >> FIX_PRECISION)
+                if r < 0:
+                    r = 0
+                elif r > 255:
+                    r = 255
+                if g < 0:
+                    g = 0
+                elif g > 255:
+                    g = 255
+                if b < 0:
+                    b = 0
+                elif b > 255:
+                    b = 255
                 imagedata[iDst] = r
                 imagedata[iDst+1] = g
                 imagedata[iDst+2] = b
@@ -383,8 +484,6 @@ class JFIFFile():
             ySrc += yBuf.stride
         image = Image.frombytes("RGB", (self.__sof.Width, self.__sof.Height), bytes(imagedata))
         image.save(filename)
-        for handler in log.handlers[:]:
-            log.removeHandler(handler)
 
 if __name__ == "__main__":
     from json import dump

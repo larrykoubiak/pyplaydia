@@ -1,7 +1,5 @@
 from math import cos, pi, sqrt
 
-from sqlalchemy import table
-
 FIX_PRECISION = 11
 FLOAT2FIX = lambda x: int(x * (1 << FIX_PRECISION))
 
