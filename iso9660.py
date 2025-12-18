@@ -1,10 +1,11 @@
 import os
+from datetime import datetime, timezone, timedelta
 from enum import Enum, Flag, auto
 from filestream import Imagestream
 from sector import Submodes
 from adpcm import ADPCMBlock
 from struct import pack, unpack
-from datetime import datetime, timezone, timedelta
+from tqdm import tqdm
 import wave
 
 
@@ -63,7 +64,7 @@ class ISO9660TextDate():
                         self.__hour, self.__minute, self.__second, self.__ms * 10,
                         timezone(timedelta(minutes=self.__offset * 15)))
 
-        
+
 class VolumeDescriptor():
     def __init__(self, data):
         header = unpack("<B5sB2041s", data)
@@ -243,6 +244,7 @@ class ISOImage():
         prev2 = 0
         pcms = []
         sh = self.__imagestream.Sectors[sectorId]
+        pbar = tqdm(total=len(self.__imagestream.Sectors),initial=sectorId)
         while not (sh.Submode & Submodes.EOF):
             if (sh.Submode & Submodes.Data and sh.Submode & Submodes.EOR):
                 filecounter += 1
@@ -268,6 +270,7 @@ class ISOImage():
                     if limit > 0 and filecounter >= limit:
                         break
             sectorId +=1
+            pbar.update(1)
             sh = self.__imagestream.Sectors[sectorId]
 
     def ReadVideo(self, record: DirectoryRecord, destination, limit=0):
@@ -291,7 +294,6 @@ class ISOImage():
                             break
             sectorId += 1
             sh = self.__imagestream.Sectors[sectorId]
-
 
     def ReadVideoFrames(self, record: DirectoryRecord, destination, limit=0):
         sectorId = record.ExtentLocation
