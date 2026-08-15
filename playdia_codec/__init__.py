@@ -1,5 +1,12 @@
-"""Small analysis helpers for Playdia AK8000 packet reverse engineering."""
+"""Small bitstream helpers."""
 
-from .packet import PlaydiaPacket, PacketLayoutError
+from .bitstream import BitPosition, BitReader, BitstreamExhausted
+from .segments import Segment, parse_segments
 
-__all__ = ["PlaydiaPacket", "PacketLayoutError"]
+__all__ = [
+    "BitPosition",
+    "BitReader",
+    "BitstreamExhausted",
+    "Segment",
+    "parse_segments",
+]

@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import re
+import sys
+from pathlib import Path
+
+import pandas as pd
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from playdia_codec.segments import dump_file
+
+
+FRAME_RE = re.compile(r"^frame_(\d+)\.bin$")
+PAYLOAD_BYTE_COUNT = 4
+
+
+def resolve_video_dir(video: str) -> Path:
+    path = Path(video)
+    if path.is_dir():
+        return path
+    return ROOT / "output" / "frames" / video
+
+
+def frame_id(path: Path) -> int:
+    match = FRAME_RE.match(path.name)
+    if not match:
+        raise ValueError(f"not a frame file: {path}")
+    return int(match.group(1))
+
+
+def payload_byte(bits: str, index: int) -> str:
+    start = index * 8
+    byte_bits = bits[start : start + 8]
+    if len(byte_bits) < 8:
+        return ""
+    return f"0x{int(byte_bits, 2):02X}"
+
+
+def segment_rows(video_dir: Path, *, include_bits: bool, raw_candidates: bool) -> list[dict[str, object]]:
+    records: list[dict[str, object]] = []
+    frame_paths = sorted(video_dir.glob("frame_*.bin"), key=frame_id)
+    for frame_path in frame_paths:
+        current_frame_id = frame_id(frame_path)
+        result = dump_file(
+            frame_path,
+            include_bits=True,
+            filter_counter=not raw_candidates,
+        )
+        for segment in result["segments"]:
+            record = {"frame_id": current_frame_id, **segment}
+            record["segment_index"] = record.pop("index")
+            missing = record.get("missing_counters_before")
+            record["missing_counters_before"] = ",".join(str(counter) for counter in missing) if missing else ""
+            payload_bits = str(record["payload_bits"])
+            for byte_index in range(PAYLOAD_BYTE_COUNT):
+                record[f"payload_byte_{byte_index}"] = payload_byte(payload_bits, byte_index)
+            if not include_bits:
+                del record["payload_bits"]
+            records.append(record)
+    return records
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Dump all frame segments for one video to an Excel workbook.")
+    parser.add_argument("video", help="video id such as 001, or a directory containing frame_*.bin files")
+    parser.add_argument("-o", "--output", type=Path, help="output .xlsx path")
+    parser.add_argument("--no-bits", action="store_true", help="omit payload_bits strings")
+    parser.add_argument("--raw-candidates", action="store_true", help="do not filter by expected counter sequence")
+    args = parser.parse_args(argv)
+
+    video_dir = resolve_video_dir(args.video)
+    if not video_dir.is_dir():
+        parser.error(f"video directory does not exist: {video_dir}")
+
+    output = args.output or (ROOT / "output" / f"{video_dir.name}_segments.xlsx")
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    records = segment_rows(
+        video_dir,
+        include_bits=not args.no_bits,
+        raw_candidates=args.raw_candidates,
+    )
+    columns = [
+        "frame_id",
+        "segment_index",
+        "counter",
+        "missing_counters_before",
+        "tag_bits",
+        "stream_bit_offset",
+        "bit_in_byte",
+        "raw_byte_offset",
+        "payload_bit_length",
+        "payload_byte_0",
+        "payload_byte_1",
+        "payload_byte_2",
+        "payload_byte_3",
+    ]
+    if not args.no_bits:
+        columns.append("payload_bits")
+
+    df = pd.DataFrame(records, columns=columns)
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="segments")
+        sheet = writer.book["segments"]
+        for column_index, column_name in enumerate(columns, start=1):
+            if column_name == "tag_bits" or column_name.startswith("payload_byte_") or column_name == "payload_bits":
+                for column_cells in sheet.iter_cols(min_col=column_index, max_col=column_index):
+                    for cell in column_cells:
+                        cell.number_format = "@"
+    print(f"wrote {len(df)} rows to {output}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
