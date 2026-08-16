@@ -4,7 +4,7 @@ import os
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Stream extractor of Playdia games")
-    parser.add_argument("-c", "--cue_path", default="input/Dragon Ball Z - Shin Saiyajin Zetsumetsu Keikaku - Chikyuu Hen (Japan).cue",help="Input CUE file path")
+    parser.add_argument("-c", "--cue_path", default="input/Dragon Ball Z - Shin Saiyajin Zetsumetsu Keikaku - Chikyuu-hen (Japan).cue",help="Input CUE file path")
     parser.add_argument("-d", "--destination", default="output", help="Destination folder")
     parser.add_argument("-l", "--limit", default=0, type=int, help="Limit number of files to extract (0=no limit)")
     parser.add_argument("-a", "--audio", action="store_true", help="Extract audio tracks (default=False)")
