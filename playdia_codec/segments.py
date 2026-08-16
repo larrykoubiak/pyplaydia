@@ -18,6 +18,11 @@ SYNC_BITS = 14
 COUNTER_BITS = 5
 TAG_BITS = 5
 PREFERRED_TAG_BITS_TEXT = "00100"
+ROW_DC_TOKEN_BITS_TEXT = "0010000000"
+ROW_DC_TOKEN_BITS = 10
+ROW_DC_VALUE_BITS = 10
+ROW_DC_PAYLOAD_PREFIX_BITS = ROW_DC_TOKEN_BITS - TAG_BITS
+ROW_DC_PAYLOAD_FIELD_BITS = ROW_DC_PAYLOAD_PREFIX_BITS + ROW_DC_VALUE_BITS
 SEGMENT_PREFIX_BITS = SYNC_BITS + COUNTER_BITS + TAG_BITS
 SYNC_BITS_TEXT = f"{SYNC_VALUE:0{SYNC_BITS}b}"
 
@@ -58,10 +63,27 @@ class Segment:
     bit_in_byte: int
     raw_byte_offset: int
     payload_bits: str
+    row_dc_token_bits: str
+    row_dc_value_bits: str
+    row_dc_value: int | None
 
     @property
     def payload_bit_length(self) -> int:
         return len(self.payload_bits)
+
+    @property
+    def row_dc_valid(self) -> bool:
+        return self.row_dc_token_bits == ROW_DC_TOKEN_BITS_TEXT and self.row_dc_value is not None
+
+    @property
+    def body_bits(self) -> str:
+        if not self.row_dc_valid:
+            return self.payload_bits
+        return self.payload_bits[ROW_DC_PAYLOAD_FIELD_BITS:]
+
+    @property
+    def body_bit_length(self) -> int:
+        return len(self.body_bits)
 
 
 def data_to_bit_text(data: bytes, *, bit_order: BitOrder = "msb") -> str:
@@ -77,6 +99,12 @@ def pattern_to_bit_text(value: int, bit_count: int, *, bit_order: BitOrder = "ms
 
 def bit_text_to_int(bits: str, *, bit_order: BitOrder = "msb") -> int:
     return int(bits if bit_order == "msb" else bits[::-1], 2)
+
+
+def signed_bit_text_to_int(bits: str, *, bit_order: BitOrder = "msb") -> int:
+    value = bit_text_to_int(bits, bit_order=bit_order)
+    sign_bit = 1 << (len(bits) - 1)
+    return value - (1 << len(bits)) if value & sign_bit else value
 
 
 def bitslice(data: bytes, start_bit: int, end_bit: int, *, bit_order: BitOrder = "msb") -> str:
@@ -299,6 +327,13 @@ def parse_segments(
         raw_byte_offset = source_offsets[stream_byte_offset]
         payload_start = bit_offset + SEGMENT_PREFIX_BITS
         end = starts[index + 1][0] if index + 1 < len(starts) else stream_end
+        payload_bits = bits[payload_start:end]
+        row_dc_token_bits = tag_bits + payload_bits[:ROW_DC_PAYLOAD_PREFIX_BITS]
+        row_dc_value_bits = ""
+        row_dc_value: int | None = None
+        if row_dc_token_bits == ROW_DC_TOKEN_BITS_TEXT and len(payload_bits) >= ROW_DC_PAYLOAD_FIELD_BITS:
+            row_dc_value_bits = payload_bits[ROW_DC_PAYLOAD_PREFIX_BITS:ROW_DC_PAYLOAD_FIELD_BITS]
+            row_dc_value = signed_bit_text_to_int(row_dc_value_bits, bit_order=bit_order)
         segments.append(
             Segment(
                 index=index,
@@ -308,14 +343,17 @@ def parse_segments(
                 stream_bit_offset=bit_offset,
                 bit_in_byte=bit_in_byte,
                 raw_byte_offset=raw_byte_offset,
-                payload_bits=bits[payload_start:end],
+                payload_bits=payload_bits,
+                row_dc_token_bits=row_dc_token_bits,
+                row_dc_value_bits=row_dc_value_bits,
+                row_dc_value=row_dc_value,
             )
         )
         previous_counter = counter
     return segments
 
 
-def segment_to_json(segment: Segment, *, include_bits: bool) -> dict[str, Any]:
+def segment_to_json(segment: Segment, *, include_bits: bool, frame_fp: int | None = None) -> dict[str, Any]:
     item: dict[str, Any] = {
         "index": segment.index,
         "counter": segment.counter,
@@ -324,11 +362,20 @@ def segment_to_json(segment: Segment, *, include_bits: bool) -> dict[str, Any]:
         "bit_in_byte": segment.bit_in_byte,
         "raw_byte_offset": hex_offset(segment.raw_byte_offset),
         "payload_bit_length": segment.payload_bit_length,
+        "row_dc_token_bits": segment.row_dc_token_bits,
+        "row_dc_valid": segment.row_dc_valid,
+        "body_bit_length": segment.body_bit_length,
     }
+    if segment.row_dc_valid:
+        item["row_dc_value_bits"] = segment.row_dc_value_bits
+        item["row_dc_value"] = segment.row_dc_value
+        if frame_fp is not None and segment.row_dc_value is not None:
+            item["row_dc_scaled"] = segment.row_dc_value * frame_fp
     if segment.missing_counters_before:
         item["missing_counters_before"] = list(segment.missing_counters_before)
     if include_bits:
         item["payload_bits"] = segment.payload_bits
+        item["body_bits"] = segment.body_bits
     return item
 
 
@@ -370,20 +417,25 @@ def dump_frame_bytes(
         source_offsets=frame_stream.source_offsets,
         filter_counter=filter_counter,
     )
+    frame_fp = raw[0x04] if len(raw) > 0x04 else None
     return {
         "size_bytes": len(raw),
         "stream_size_bytes": len(frame_stream.data),
+        "frame_fp": frame_fp,
         "bit_order": bit_order,
         "sync_bits": SYNC_BITS_TEXT,
         "counter_bits": COUNTER_BITS,
         "tag_bits": TAG_BITS,
         "preferred_tag_bits": PREFERRED_TAG_BITS_TEXT,
+        "segment_prefix_bits": SEGMENT_PREFIX_BITS,
+        "row_dc_token_bits": ROW_DC_TOKEN_BITS_TEXT,
+        "row_dc_value_bits": ROW_DC_VALUE_BITS,
         "counter_filter": filter_counter,
         "sector_count": len(frame_stream.sectors),
         "sectors": [sector_to_json(sector) for sector in frame_stream.sectors],
         "f2": [f2_to_json(control) for control in frame_stream.f2_controls],
         "segment_count": len(segments),
-        "segments": [segment_to_json(segment, include_bits=include_bits) for segment in segments],
+        "segments": [segment_to_json(segment, include_bits=include_bits, frame_fp=frame_fp) for segment in segments],
     }
 
 
