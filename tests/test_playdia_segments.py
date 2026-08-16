@@ -21,7 +21,7 @@ def bytes_from_bits(bits: str) -> bytes:
     return int(padded, 2).to_bytes(len(padded) // 8, "big")
 
 
-def header_bits(counter: int, tag_bits: str = "001000") -> str:
+def header_bits(counter: int, tag_bits: str = "00100") -> str:
     return f"{SYNC_BITS_TEXT}{counter:0{COUNTER_BITS}b}{tag_bits}"
 
 
@@ -32,9 +32,9 @@ class SegmentTests(unittest.TestCase):
         segments = parse_segments(data)
 
         self.assertEqual([segment.counter for segment in segments], [0, 1])
-        self.assertEqual([segment.tag_bits for segment in segments], ["001000", "001000"])
-        self.assertEqual(segments[0].payload_bits, "0001111")
-        self.assertEqual(segments[1].payload_bit_length, 7)
+        self.assertEqual([segment.tag_bits for segment in segments], ["00100", "00100"])
+        self.assertEqual(segments[0].payload_bits, "00001111")
+        self.assertEqual(segments[1].payload_bit_length, 8)
 
     def test_tag_bits_are_not_required_to_be_fixed(self):
         data = bytes.fromhex("00 80 e0 00")
@@ -45,7 +45,7 @@ class SegmentTests(unittest.TestCase):
 
         segments = parse_segments(data, start_bit=0, filter_counter=False)
         self.assertEqual(segments[0].counter, 7)
-        self.assertEqual(segments[0].tag_bits, "000000")
+        self.assertEqual(segments[0].tag_bits, "00000")
 
     def test_counter_filter_continues_after_missing_counter(self):
         data = bytes_from_bits(
@@ -101,10 +101,29 @@ class SegmentTests(unittest.TestCase):
         self.assertEqual(result["f2"][0]["msf_targets"][0]["minute"], 1)
         self.assertEqual(result["f2"][0]["msf_targets"][0]["second"], 10)
         self.assertEqual([segment["counter"] for segment in result["segments"]], [0, 1])
-        self.assertEqual([segment["tag_bits"] for segment in result["segments"]], ["001000", "001000"])
+        self.assertEqual([segment["tag_bits"] for segment in result["segments"]], ["00100", "00100"])
         self.assertEqual(result["segments"][0]["stream_bit_offset"], "0x0")
         self.assertEqual(result["segments"][0]["raw_byte_offset"], "0x1")
         self.assertEqual(result["segments"][1]["raw_byte_offset"], "0x823")
+
+    def test_row_zero_payload_is_byte_aligned_frame_header_data(self):
+        raw = bytearray([0xFF] * SECTOR_SIZE)
+        raw[0] = F1_MARKER
+        raw[1:0x25] = bytes.fromhex(
+            "00 80 04 19"
+            " 0a 14 0e 0d 12 25 16 1c 0f 18 0f 12 12 1f 11 14"
+            " 0a 14 0e 0d 12 25 16 1c 0f 18 0f 12 12 1f 11 14"
+        )
+        raw[0x25:0x29] = bytes.fromhex("00 80 24 00")
+        raw[0x29:0x2B] = b"\xff\xff"
+
+        result = dump_frame_bytes(bytes(raw), include_bits=True)
+
+        row0 = result["segments"][0]
+        self.assertEqual(row0["counter"], 0)
+        self.assertEqual(row0["tag_bits"], "00100")
+        self.assertEqual(row0["payload_bit_length"], 264)
+        self.assertEqual(row0["payload_bits"], "".join(f"{byte:08b}" for byte in raw[0x04:0x25]))
 
 
 if __name__ == "__main__":
