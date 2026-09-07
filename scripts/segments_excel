@@ -35,6 +35,7 @@ def segment_rows(video_dir: Path, *, include_bits: bool):
                 "id": lmb.lmbn,
                 "offset": lmb.byte_offset,
                 "bit": lmb.bit_offset,
+                "dcseed": lmb.dcseed,
                 "len": len(lmb.data.bin),
                 "data": "" if not include_bits else lmb.data.bin
             })

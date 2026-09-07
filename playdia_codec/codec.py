@@ -45,7 +45,9 @@ class PictureHeader:
 @dataclass
 class LMB:
     LMBSC: ClassVar[Bits] = Bits(uint=0x20, length=14)
+    DCSC: ClassVar[Bits] = Bits(uint=0x80, length=10)
     lmbn: int
+    dcseed: int
     pos: int
     data: Bits
 
@@ -56,8 +58,12 @@ class LMB:
         if lmbsc != cls.LMBSC:
             raise ValueError(f"Invalid LMB start code. {lmbsc.bin}")
         lmbn = stream.read(5).uint
+        dcsc = stream.read(10)
+        if dcsc != cls.DCSC:
+            raise ValueError(f"Invalid DCSC found {dcsc.bin}")
+        dcseed = stream.read(10).int
         data_start = stream.pos
-        find_next_row = cls.LMBSC + Bits(uint=lmbn+1, length=5)
+        find_next_row = cls.LMBSC + Bits(uint=lmbn+1, length=5) + cls.DCSC
         next_offset = stream.find(find_next_row, start=data_start+ (186*2))
         if next_offset:
             next_pos = next_offset[0]
@@ -70,6 +76,7 @@ class LMB:
         stream.pos = next_pos
         return cls(
             lmbn= lmbn,
+            dcseed=dcseed,
             pos=pos,
             data=data
         )
