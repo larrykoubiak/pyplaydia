@@ -1,10 +1,13 @@
 import os
+from contextlib import ExitStack
 from datetime import datetime, timezone, timedelta
 from enum import Enum, Flag, auto
 from filestream import Imagestream
 from sector import Submodes
-from adpcm import ADPCMBlock
-from struct import pack, unpack
+from playdia_codec.adpcm import XaAudioDecoder
+from playdia_codec import Picture
+from playdia_codec.video_export import export_scene
+from struct import unpack
 from tqdm import tqdm
 import wave
 
@@ -180,9 +183,22 @@ class ISOImage():
         self.__volumedescriptors = []
         self.__rootDirectory = None
         self.__nbSectors = self.__imagestream.Length / 2352
-        self.__readVolumeDescriptors()
-        if len(self.__volumedescriptors) > 1:
-            self.__readDirectoryRecord(self.__rootDirectory.ExtentLocation)
+        try:
+            self.__readVolumeDescriptors()
+            if len(self.__volumedescriptors) > 1:
+                self.__readDirectoryRecord(self.__rootDirectory.ExtentLocation)
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self):
+        self.__imagestream.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
     
     def __readVolumeDescriptors(self):
         sectorId = 16
@@ -238,85 +254,81 @@ class ISOImage():
                 o.write(buffer)
 
     def ReadAudio(self, record: DirectoryRecord, destination, limit=0):
+        """Export the first XA channel in each scene to native-rate PCM WAV."""
+        for filecounter, start, stop in self.__scene_ranges(record, limit):
+            filename = os.path.join(destination, "audio_{:03}.wav".format(filecounter))
+            decoder = None
+            audio_channel = None
+            with ExitStack() as outputs, tqdm(
+                range(start, stop), desc=os.path.basename(filename), unit="sector", leave=False
+            ) as sectors:
+                for sectorId in sectors:
+                    header = self.__imagestream.Sectors[sectorId]
+                    if not (header.Submode & Submodes.Audio):
+                        continue
+                    if audio_channel is not None and header.Channel != audio_channel:
+                        continue
+                    sector = self.__imagestream.ReadSector(sectorId)
+                    coding = sector.Coding.value
+                    if decoder is None:
+                        decoder = XaAudioDecoder(coding)
+                        audio_channel = sector.Channel
+                        os.makedirs(destination, exist_ok=True)
+                        wavefile = outputs.enter_context(wave.open(filename, "wb"))
+                        wavefile.setparams((decoder.channels, 2, decoder.sample_rate, 0, "NONE", "not compressed"))
+                    elif coding != decoder.coding:
+                        raise ValueError("XA audio format changes within a scene")
+                    wavefile.writeframesraw(decoder.decode_sector(sector.Data))
+
+    def __scene_ranges(self, record, limit):
+        """Yield (scene number, start, stop); audio EOR does not end a scene."""
         sectorId = record.ExtentLocation
+        scene_start = sectorId
         filecounter = 0
-        prev1 = 0
-        prev2 = 0
-        pcms = []
-        sh = self.__imagestream.Sectors[sectorId]
-        pbar = tqdm(total=len(self.__imagestream.Sectors),initial=sectorId)
-        while not (sh.Submode & Submodes.EOF):
-            if (sh.Submode & Submodes.Data and sh.Submode & Submodes.EOR):
+        headers = self.__imagestream.Sectors
+        while sectorId < len(headers):
+            sh = headers[sectorId]
+            if sh.Submode & Submodes.EOF:
+                break
+            if not (sh.Submode & Submodes.Audio) and sh.Submode & Submodes.EOR:
+                yield filecounter, scene_start, sectorId + 1
+                scene_start = sectorId + 1
                 filecounter += 1
-            if (sh.Submode & Submodes.Audio):
-                s = self.__imagestream.ReadSector(sectorId)
-                for sg in range(18):
-                    data = s.Data[sg * 128:(sg * 128) + 128]
-                    block = ADPCMBlock(data)
-                    result,prev1,prev2 = block.ReadPCM(prev1, prev2) 
-                    pcms.extend(result)
-                if (sh.Submode & Submodes.EOR):
-                    filename = os.path.join(destination, "audio_{:03}.wav".format(filecounter))
-                    if not os.path.exists(os.path.dirname(filename)):
-                        os.makedirs(os.path.dirname(filename), exist_ok=True)
-                    wavefile = wave.open(filename, "wb")
-                    wavefile.setparams((1, 2, 44100, len(pcms),"NONE","not compressed"))
-                    frames = pack(str(len(pcms)) + "h", *pcms)
-                    wavefile.writeframes(frames)
-                    wavefile.close()
-                    pcms = []
-                    prev1 = 0
-                    prev2 = 0
-                    if limit > 0 and filecounter >= limit:
-                        break
-            sectorId +=1
-            pbar.update(1)
-            sh = self.__imagestream.Sectors[sectorId]
+                if limit > 0 and filecounter >= limit:
+                    return
+            sectorId += 1
+        if scene_start < sectorId:
+            yield filecounter, scene_start, sectorId
 
     def ReadVideo(self, record: DirectoryRecord, destination, limit=0):
-        sectorId = record.ExtentLocation
-        filecounter = 0
-        bytes = bytearray()
-        sh = self.__imagestream.Sectors[sectorId]
-        while not (sh.Submode & Submodes.EOF):
-            if not (sh.Submode & Submodes.Audio):
-                s = self.__imagestream.ReadSector(sectorId)
-                bytes += s.Data
-                if (sh.Submode & Submodes.EOR):
-                    filename = os.path.join(destination, "video_{:03}.bin".format(filecounter))
-                    if not os.path.exists(os.path.dirname(filename)):
-                        os.mkdir(os.path.dirname(filename))
-                    with open(filename, "wb") as o:
-                        o.write(bytes)
-                        bytes = bytearray()
-                        filecounter += 1
-                        if limit > 0 and filecounter >= limit:
-                            break
-            sectorId += 1
-            sh = self.__imagestream.Sectors[sectorId]
+        """Export each physical scene as lossless PNG video with PCM audio."""
+        for filecounter, start, stop in self.__scene_ranges(record, limit):
+            filename = os.path.join(destination, "video_{:03}.avi".format(filecounter))
+            count = export_scene(self.__imagestream, start, stop, filename)
+            if count:
+                print(f"Wrote {filename} ({count} pictures)")
 
     def ReadVideoFrames(self, record: DirectoryRecord, destination, limit=0):
+        """Decode complete F1/F2 pictures directly to PNG files."""
         sectorId = record.ExtentLocation
         filecounter = 0
         framecounter = 0
-        bytes = bytearray()
+        packet = bytearray()
         sh = self.__imagestream.Sectors[sectorId]
         while not (sh.Submode & Submodes.EOF):
             if not (sh.Submode & Submodes.Audio):
                 s = self.__imagestream.ReadSector(sectorId)
-                if s.Data[0] == 0xF3:
-                    pass
-                elif s.Data[0] == 0xF2:
-                    bytes += s.Data
-                    filename = os.path.join(destination, "{:03}/frame_{:04}.bin".format(filecounter, framecounter))
-                    if not os.path.exists(os.path.dirname(filename)):
-                        os.makedirs(os.path.dirname(filename),exist_ok=True)
-                    with open(filename, "wb") as o:
-                        o.write(bytes)
-                    bytes = bytearray()
+                if s.Data[0] == 0xF1:
+                    packet += s.Data[:2048]
+                elif s.Data[0] == 0xF2 and packet:
+                    packet += s.Data[:2048]
+                    filename = os.path.join(destination, "{:03}/frame_{:04}.png".format(filecounter, framecounter))
+                    Picture.from_bytes(packet).save(filename)
+                    packet = bytearray()
                     framecounter += 1
-                else:
-                    bytes += s.Data
+                # F3 padding and non-video sectors contribute no picture data.
+                # In particular, scene boundaries can contain 2324-byte Form2
+                # sectors which used to corrupt the next extracted frame.
                 if (sh.Submode & Submodes.EOR):
                     filecounter += 1
                     framecounter = 0
@@ -330,7 +342,6 @@ class ISOImage():
         sid = sectorId
         shiftdata = data
         s = self.__imagestream.ReadSector(sectorId)
-        fid = s.FileStreamId
         while s.Data[0] != 0xF2:
             if not(s.Submode & Submodes.Audio) and s.Data[0] == 0xF1:
                 shiftdata = s.insertData(shiftdata, o)
@@ -340,7 +351,8 @@ class ISOImage():
             while (self.__imagestream.Sectors[sid].Submode & Submodes.Audio):
                 sid +=1
             s = self.__imagestream.ReadSector(sid)
-        s.insertData(shiftdata, 0x23) ## supposed end of F2 header, ignored popped values that are probably FF
+        # F2 picture payload follows its marker and 34 control bytes.
+        s.insertData(shiftdata, 0x23)
         
     def Write(self, path, name):
         self.__imagestream.Write(path, name)

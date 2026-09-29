@@ -1,4 +1,4 @@
-from enum import Enum, Flag, auto
+from enum import Flag, auto
 from struct import pack, unpack
 
 
@@ -81,15 +81,15 @@ class Sector():
 
     @property
     def Minute(self):
-        return (self.__minute & 0xF + (10 * (self.__minute >> 4)))
+        return (self.__minute & 0xF) + 10 * (self.__minute >> 4)
 
     @property
     def Second(self):
-        return (self.__second & 0xF + (10 * (self.__second >> 4)))
+        return (self.__second & 0xF) + 10 * (self.__second >> 4)
 
     @property
     def Block(self):
-        return (self.__block & 0xF + (10 * (self.__block >> 4)))
+        return (self.__block & 0xF) + 10 * (self.__block >> 4)
 
     @property
     def Mode(self):

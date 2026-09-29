@@ -1,5 +1,6 @@
 import os
 import re
+from contextlib import ExitStack
 from sector import Sector, Submodes
 from pathlib import Path
 
@@ -8,9 +9,22 @@ class Filestream():
     def __init__(self, filepath=None):
         self.__filename = os.path.basename(filepath)
         self.__stream = open(filepath,'rb')
-        self.__stream.seek(0, 2)
-        self.__length = self.__stream.tell()
-        self.__stream.seek(0,0)
+        try:
+            self.__stream.seek(0, 2)
+            self.__length = self.__stream.tell()
+            self.__stream.seek(0,0)
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self):
+        self.__stream.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
 
     @property
     def Filename(self):
@@ -32,10 +46,23 @@ class Imagestream():
     def __init__(self, filepath=None):
         self.__streams = []
         self.__sectors = []
-        self.__position = 0
-        if filepath:
-            self.__readcue(filepath)
-            self.__readsectors()
+        try:
+            if filepath:
+                self.__readcue(filepath)
+                self.__readsectors()
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self):
+        for stream in self.__streams:
+            stream.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
 
     def __readcue(self, filepath):
         self.__streams = []
@@ -104,16 +131,16 @@ class Imagestream():
 
     def Write(self, path, name):
         outputstreams = []
-        for i in range(len(self.__streams)):
-            s = self.__streams[i]
-            filename = "{} (Track {:02}).bin".format(name, i+1)
-            of = {"filename": filename, "stream": open(os.path.join(path, filename), "wb")}
-            outputstreams.append(of)
-        for i in range(len(self.Sectors)):
-            if self.Sectors[i].Data is None:
-                self.Sectors[i] = self.ReadSector(i)
-            s = self.Sectors[i]
-            outputstreams[s.FileStreamId]["stream"].write(s.ToBytes())
+        with ExitStack() as outputs:
+            for i in range(len(self.__streams)):
+                filename = "{} (Track {:02}).bin".format(name, i+1)
+                stream = outputs.enter_context(open(os.path.join(path, filename), "wb"))
+                outputstreams.append({"filename": filename, "stream": stream})
+            for i in range(len(self.Sectors)):
+                if self.Sectors[i].Data is None:
+                    self.Sectors[i] = self.ReadSector(i)
+                s = self.Sectors[i]
+                outputstreams[s.FileStreamId]["stream"].write(s.ToBytes())
         self.__writecue(path, name, outputstreams)
 
     @property
