@@ -23,6 +23,18 @@ class StreamType(IntEnum):
     PADDING = 0xF3
 
 
+class ControlInput(IntEnum):
+    """Observed selector for the seven candidate routes in an F2 record."""
+
+    B = 0
+    A = 1
+    RIGHT = 2
+    LEFT = 3
+    UP = 4
+    DOWN = 5
+    NO_INPUT = 6
+
+
 SECTOR_SIZE = 0x800
 F2_CONTROL_SIZE = 0x22
 PICTURE_ROWS = 27
@@ -201,11 +213,116 @@ class VideoStream:
         return reconstruct_rgb(self.rows, self.header)
 
 
-class ControlStream:
-    """Raw F2 control bytes, retained for inspection without interpretation."""
+@dataclass(frozen=True)
+class CandidateAddress:
+    """One provisional M/S/U address group from an F2 control record.
 
-    def __init__(self):
-        self.stream = ConstBitStream()
+    ``payload_offset`` counts from the F2 marker at offset zero.  ``fourth``
+    is retained beside the three address bytes, but is not interpreted.
+    """
+
+    slot: int
+    payload_offset: int
+    m: int
+    s: int
+    u: int
+    fourth: int
+
+    @property
+    def raw(self) -> bytes:
+        return bytes((self.m, self.s, self.u, self.fourth))
+
+    @property
+    def input(self) -> ControlInput:
+        """Return the observed button/no-input condition for this route."""
+        return ControlInput(self.slot)
+
+    @property
+    def frame(self) -> int:
+        """Expand the five-sector unit stored in the third address byte."""
+        return self.u * 5
+
+    @property
+    def msf(self) -> tuple[int, int, int]:
+        """Return the observed binary M/S/five-sector-unit representation."""
+        return self.m, self.s, self.frame
+
+    @property
+    def absolute_sector(self) -> int:
+        """Expand the three address bytes to a sector count including lead-in."""
+        return self.m * 4500 + self.s * 75 + self.frame
+
+    @property
+    def lba(self) -> int:
+        """Return the candidate zero-based LBA without validating the target."""
+        return self.absolute_sector - 150
+
+
+class ControlStream:
+    """The 34 bytes after an F2 marker, with tentative fields exposed.
+
+    Only the layout and address arithmetic documented in ``doc/f2/README.md``
+    are decoded.  Unresolved bytes remain available both as named raw fields
+    and through ``stream``; no command, button, or navigation meaning is
+    assigned here.
+    """
+
+    SIZE = F2_CONTROL_SIZE
+    CANDIDATE_COUNT = 7
+    CANDIDATE_START = 2  # Stream index; payload offset 3 includes the F2.
+    CANDIDATE_SIZE = 4
+    SINGLE_PICTURE_END_BIT = 0x80
+    MULTIPLE_PICTURE_END_BIT = 0x40
+
+    def __init__(self, data: bytes | bytearray | None = None):
+        self.stream = ConstBitStream(bytes=b"" if data is None else bytes(data))
+        self.flags: int | None = None
+        self.second_byte: int | None = None
+        self.candidate_addresses: tuple[CandidateAddress, ...] = ()
+        self.trailing_bytes = b""
+        if data is not None:
+            self.parse()
+
+    @classmethod
+    def from_bytes(cls, data: bytes | bytearray) -> "ControlStream":
+        """Parse exactly 34 marker-free bytes from an F2 sector."""
+        return cls(data)
+
+    def parse(self):
+        """Parse tentative fields while preserving the stream and its cursor."""
+        raw = self.stream.bytes
+        if len(raw) != self.SIZE:
+            raise ValueError(f"Expected exactly {self.SIZE} F2 control bytes, got {len(raw)}")
+
+        self.flags = raw[0]
+        self.second_byte = raw[1]
+        addresses = []
+        for slot in range(self.CANDIDATE_COUNT):
+            start = self.CANDIDATE_START + slot * self.CANDIDATE_SIZE
+            addresses.append(CandidateAddress(
+                slot, start + 1, raw[start], raw[start + 1], raw[start + 2], raw[start + 3]
+            ))
+        self.candidate_addresses = tuple(addresses)
+        trailer_start = self.CANDIDATE_START + self.CANDIDATE_COUNT * self.CANDIDATE_SIZE
+        self.trailing_bytes = raw[trailer_start:]
+        return self
+
+    @property
+    def single_picture_scene_end(self) -> bool:
+        """Whether bit 7 has the observed single-picture-scene correlation."""
+        return self.flags is not None and bool(self.flags & self.SINGLE_PICTURE_END_BIT)
+
+    @property
+    def multiple_picture_scene_end(self) -> bool:
+        """Whether bit 6 has the observed multiple-picture-scene correlation."""
+        return self.flags is not None and bool(self.flags & self.MULTIPLE_PICTURE_END_BIT)
+
+    @property
+    def unresolved_flag_bits(self) -> int | None:
+        """Return the lower six bits, whose meanings remain unresolved."""
+        if self.flags is None:
+            return None
+        return self.flags & ~(self.SINGLE_PICTURE_END_BIT | self.MULTIPLE_PICTURE_END_BIT)
 
 
 class Picture:
@@ -253,7 +370,7 @@ class Picture:
         if not ended:
             raise DecodeError("Missing F2 end sector")
         self.video_stream.stream = ConstBitStream(bytes=video)
-        self.control_stream.stream = ConstBitStream(bytes=control)
+        self.control_stream = ControlStream(control)
 
     def decode_rgb(self) -> bytes:
         """Return native 248×216 pixels in packed R, G, B byte order."""

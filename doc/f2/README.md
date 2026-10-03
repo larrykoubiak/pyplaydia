@@ -57,22 +57,46 @@ field controls progression.
 
 ## Candidate address layout
 
-The address arithmetic initially came from
+The disc data supports an MSF-like address with a five-sector final unit. At
+Dragon Ball LBA 14139, for example, the physical sector header is `03:10:39`.
+The F2 group `03 0A 08` expands to `03:10:40` because `0x0A` is binary 10 and
+`8 * 5 = 40`; that is exactly the next F1 sector at LBA 14140. Subtracting the
+standard 150-sector lead-in converts the expanded address to a zero-based LBA.
+
 [PlaydiaEmu's player, revision 6e75840](https://github.com/AloysHF/PlaydiaEmu/blob/6e75840/crates/playdiaemu-core/src/player.rs)
-and was tested against positions on these discs. Its command and button
-interpretations are not assumed here.
+was the initial lead for this arithmetic. It is used here because the sector
+comparisons support it; PlaydiaEmu's command and button interpretations are not
+assumed.
 
 - Seven candidate four-byte groups begin at payload offsets
   `0x03, 0x07, 0x0B, 0x0F, 0x13, 0x17, 0x1B`, counting F2 as offset zero.
-- The first three bytes are provisionally binary `M, S, U`, with:
+- The first three bytes are binary `M, S, U`, with:
   **`LBA = M * 4500 + S * 75 + U * 5 - 150`**.
-- These are not BCD values or ordinary CD MSF fields. The fourth byte is unknown.
+- These are not BCD values. They differ from ordinary CD MSF because `U` counts
+  five-sector units, and observed `S` values are not constrained below 60. The
+  fourth byte is unknown.
 - Not every group is necessarily an address. For example, recurring
   `00 03 00` values yield LBA 75, outside the game stream; zero groups and other
   apparent parameters must remain uninterpreted.
 
 This is a research aid, not a validated schema for every F2 record. The full
 sector and raw byte positions remain the source of truth.
+
+### Five-sector alignment
+
+The five-sector unit is also visible in Dragon Ball's 179 bit-7 single-picture
+scenes. Every picture begins at an LBA divisible by five. Its F1 sectors are
+contiguous through the ending F2, with no intervening audio or F3 sectors.
+After that EOR-bearing F2, zero-filled Form-2/RTS sectors align the next F1:
+
+- 171 endings have one zero sector;
+- 3 endings have two zero sectors;
+- 5 endings already end on the boundary and need none.
+
+In all 179 cases, the next nonzero sector is F1 at an LBA divisible by five.
+This supports a five-sector scheduling or interleave unit. Accommodating the
+normal audio/video layout is a plausible reason for it, but the padding alone
+does not establish that each empty sector is specifically an audio slot.
 
 ## Video-to-still pointers and onward navigation
 
@@ -92,11 +116,47 @@ A clear Dragon Ball example:
 The relevant three-byte values are `03 0A 08` for 14140 and `03 0A 0A` for
 14150. The still repeats the video's final picture.
 
-**Hypothesis:** the video directs playback to the still, and the still supplies
-onward destinations or a self-reference that preserves its display. Which
-entry corresponds to no input, a button, or another condition is unknown.
+The paired records support the video directing playback to the still, with the
+still retaining onward button routes and a no-input self-reference. The route
+order is established below; the exact command and timing behavior remains open.
 
 ## Input during video and timed events
+
+### Observed controller route order
+
+The seven groups correspond to the controller's six buttons followed by a
+no-input route:
+
+| Slot | Payload offset | Observed selector |
+|---:|---:|---|
+| 0 | `0x03` | B / cancel |
+| 1 | `0x07` | A / confirm |
+| 2 | `0x0B` | Right |
+| 3 | `0x0F` | Left |
+| 4 | `0x13` | Up |
+| 5 | `0x17` | Down |
+| 6 | `0x1B` | No input / default progression |
+
+This order is supported independently by both discs. In Dragon Ball scenes
+52–65, slots 4 and 5 move the highlight up and down through three choices,
+while slot 1 activates the highlighted destination. Scenes 171, 173 and 175
+add left/right movement. Scenes 544–547 provide a particularly direct check:
+the purple, green, red and blue controller-button screens advance only through
+slots 4, 2, 5 and 3 respectively, matching Up, Right, Down and Left.
+
+Sailor Moon scenes 4–14 show the blue and green directional controls on screen;
+their F2 records use slots 3 and 2 for left and right, and slot 1 confirms the
+selection. Scene 16 separates buttons from default behavior: all six slots
+0–5 route to the same destination while slot 6 is empty during playback. This
+is direct evidence that slot 6 is not a seventh physical button. The B and A
+labels for slots 0 and 1 follow from the remaining two controller buttons plus
+their observed cancel/confirm behavior.
+
+`NO_INPUT` describes the observed selector only. Depending on the record it
+can continue playback, enter the following still, or self-reference that still;
+it does not by itself establish a timer or timeout command.
+
+### Playback hypotheses
 
 Some video-ending F2s already contain several onward destinations that the
 following still preserves. This could keep the same navigation choices active

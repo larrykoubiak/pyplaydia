@@ -8,7 +8,7 @@ import unittest
 
 from PIL import Image
 
-from playdia_codec import DecodeError, Picture
+from playdia_codec import ControlInput, ControlStream, DecodeError, Picture
 from playdia_codec.transform import inverse_dct
 from iso9660 import ISOImage
 from sector import Submodes
@@ -181,7 +181,49 @@ class PictureTests(unittest.TestCase):
         picture = Picture.from_bytes(sectors(packet, padding=True))
         self.assertTrue(picture.video_stream.stream.bytes.startswith(packet))
         self.assertEqual(picture.control_stream.stream.bytes, b"\x40" + bytes(33))
+        self.assertEqual(picture.control_stream.flags, 0x40)
+        self.assertTrue(picture.control_stream.multiple_picture_scene_end)
         self.assertEqual(picture.video_stream.rows[26].blocks[-1][0], 31)
+
+    def test_f2_control_fields_and_candidate_addresses(self):
+        groups = [
+            (3, 10, 8, 0x91),   # Candidate LBA 14140.
+            (3, 10, 10, 0x92),  # Candidate LBA 14150.
+            (0, 3, 0, 0x93),    # Candidate LBA 75.
+            (0, 0, 0, 0x94),    # Arithmetic is exposed without validation.
+            (1, 2, 3, 0x95),
+            (4, 5, 6, 0x96),
+            (7, 8, 9, 0x97),
+        ]
+        raw = bytes((0xA4, 0xF0)) + b"".join(bytes(group) for group in groups) + b"\xde\xad\xbe\xef"
+        control = ControlStream.from_bytes(raw)
+
+        self.assertEqual(control.stream.bytes, raw)
+        self.assertEqual(control.stream.pos, 0)
+        self.assertEqual(control.flags, 0xA4)
+        self.assertEqual(control.second_byte, 0xF0)
+        self.assertTrue(control.single_picture_scene_end)
+        self.assertFalse(control.multiple_picture_scene_end)
+        self.assertEqual(control.unresolved_flag_bits, 0x24)
+        self.assertEqual([address.payload_offset for address in control.candidate_addresses], [3, 7, 11, 15, 19, 23, 27])
+        self.assertEqual([address.input for address in control.candidate_addresses], [
+            ControlInput.B, ControlInput.A, ControlInput.RIGHT, ControlInput.LEFT,
+            ControlInput.UP, ControlInput.DOWN, ControlInput.NO_INPUT,
+        ])
+        self.assertEqual([address.lba for address in control.candidate_addresses[:4]], [14140, 14150, 75, -150])
+        self.assertEqual(control.candidate_addresses[0].msf, (3, 10, 40))
+        self.assertEqual(control.candidate_addresses[0].absolute_sector, 14290)
+        self.assertEqual(control.candidate_addresses[0].raw, bytes(groups[0]))
+        self.assertEqual(control.trailing_bytes, b"\xde\xad\xbe\xef")
+
+    def test_f2_control_requires_the_complete_marker_free_record(self):
+        for size in (0, 33, 35):
+            with self.subTest(size=size), self.assertRaisesRegex(ValueError, "exactly 34"):
+                ControlStream.from_bytes(bytes(size))
+
+        empty = ControlStream()
+        self.assertIsNone(empty.flags)
+        self.assertEqual(empty.candidate_addresses, ())
 
     def test_rejects_malformed_sector_packets(self):
         valid = sectors(picture_bytes())

@@ -153,9 +153,18 @@ number (1–27, or 0 before the first row), and zero-based block index where
 applicable.
 The stored streams use `bitstring.ConstBitStream`: their bits are read-only,
 while `.pos` remains available for inspection and seeking.
-`picture.control_stream.stream` retains the raw F2 control bytes for study;
-they are not interpreted as timestamps. Each row's `first_luma_dc` property
-exposes its first decoded luminance DC coefficient.
+`picture.control_stream.stream` retains all 34 bytes after the F2 marker.
+`flags` and `second_byte` expose the first two bytes, while
+`candidate_addresses` exposes the seven provisional four-byte groups at F2
+payload offsets `0x03, 0x07, ..., 0x1B`. Their `input` properties identify the
+observed selectors, in order: B, A, Right, Left, Up, Down, and no input. Each
+group exposes the observed MSF-like expansion as `msf == (M, S, U * 5)`; `lba`
+then subtracts the usual 150-sector lead-in. Neither property checks whether
+the group is a real destination. The unresolved fourth byte and the record's
+four `trailing_bytes` remain intact. The `single_picture_scene_end` and
+`multiple_picture_scene_end` booleans report the observed high-bit correlations,
+not established playback commands. Each row's `first_luma_dc` property exposes
+its first decoded luminance DC coefficient.
 
 Disc readers support context managers, so track files close even if an
 export fails:
