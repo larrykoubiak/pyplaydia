@@ -36,6 +36,7 @@ Cython is an optional build tool, not a requirement for running the source.
 
 - `main.py`: disc extraction CLI.
 - `iso9660.py`, `filestream.py`, `sector.py`: disc and filesystem handling.
+- `control_dump.py`: complete raw F2 sectors and a byte CSV for inspection.
 - `playdia_codec/`: working video/audio decoders and lossless AVI export.
   `adpcm.py` supplies native-rate mono/stereo PCM for both WAV and AVI.
 - `tests/`: synthetic regression tests.
@@ -62,7 +63,7 @@ branches or establish exact console playback timing.
 Use `-l 1` to export only the first physical scene per disc file. Silent scenes
 still count toward the limit and keep their scene number. `-l 0` means no
 limit; negative limits are rejected. Always supply a CUE path with `-c` and
-choose an output mode: `-v`, `-f`, or `-a` (these can be combined). Running
+choose an output mode: `-v`, `-f`, `-a`, or `--controls` (these can be combined). Running
 without an output mode displays help.
 
 ## Export WAV audio
@@ -86,6 +87,50 @@ venv/bin/python main.py -c 'input/game.cue' -f -d output
 `-f` decodes each completed picture in memory and writes
 `output/frames/000/frame_0000.png`, etc. Use `-l 1` to export only the first
 physical scene. No intermediate BIN files are written.
+
+## Dump F2 control records
+
+```sh
+venv/bin/python main.py -c 'input/game.cue' --controls -d output
+```
+
+This scans every loaded CUE track for Mode 2 sectors whose first payload byte
+is **F2**, in physical order. It includes zero-filled prefixes, unknown byte
+values, sectors without preceding F1s, and matches carrying audio, EOR or EOF
+flags. It continues past EOF and does not use ISO directory or scene boundaries.
+`-l` applies only to media exports; `--controls` always dumps all matches.
+
+Each disc produces one set of files directly in `output/controls/`:
+
+- `f2.csv`: source track name, disc/track sector positions, raw file offsets,
+  raw MSF and XA subheader bytes, and a 35-byte prefix for spreadsheet viewing.
+  Columns `b00`–`b22` are byte offsets from the payload start: `b00` is F2,
+  followed by the next 34 bytes. `prefix_hex` contains the same bytes together.
+- `f2_sectors.bin`: **complete, unchanged 2352-byte sectors**, one per CSV row.
+  This preserves all payload bytes beyond the CSV preview, both XA subheaders,
+  and the sector trailer. `raw_dump_offset` locates each row's sector in the BIN;
+  its payload begins 24 bytes later and spans `payload_size` bytes.
+- `summary.json`: total sectors scanned and F2 counts per source track.
+
+All indexes and offsets are zero-based. `sector_lba` counts sectors across the
+loaded track files in CUE order. No command, pointer, button, wait flag or record
+layout is inferred. The 35-byte CSV preview does not define the record length;
+the complete sector is available in the BIN. An audio-flagged marker match is
+retained for inspection, without asserting that it is a control command.
+
+Use a separate `-d` folder for each disc. For the local Dragon Ball image:
+
+```sh
+venv/bin/python main.py -c 'input/DRAGON/Dragon Ball Z - Shin Saiyajin Zetsumetsu Keikaku - Chikyuu-hen (Japan).cue' --controls -d output/DRAGON
+```
+
+Open `output/DRAGON/controls/f2.csv`. The dump no longer creates separate
+`.AJS`/`.GLB` output folders; an empty `.GLB` table from an older run is not the
+disc's F2 dump. Control-only extraction does not parse the ISO filesystem or
+decode pictures. When combined with media exports, the raw dump finishes first.
+
+The [F2 investigation notes](doc/f2/README.md) record observed flag patterns,
+video/still relationships, candidate addresses, and open playback hypotheses.
 
 ## Python API
 
