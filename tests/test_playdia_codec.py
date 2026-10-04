@@ -8,7 +8,7 @@ import unittest
 
 from PIL import Image
 
-from playdia_codec import ControlInput, ControlStream, DecodeError, Picture
+from playdia_codec import ControlFlags, ControlInput, ControlStream, DecodeError, Picture
 from playdia_codec.transform import inverse_dct
 from iso9660 import ISOImage
 from sector import Submodes
@@ -201,6 +201,13 @@ class PictureTests(unittest.TestCase):
         self.assertEqual(control.stream.bytes, raw)
         self.assertEqual(control.stream.pos, 0)
         self.assertEqual(control.flags, 0xA4)
+        self.assertIsInstance(control.flags, ControlFlags)
+        self.assertEqual(
+            control.flags,
+            ControlFlags.SINGLE_PICTURE_END
+            | ControlFlags.PARAMETERIZED
+            | ControlFlags.NAVIGATION,
+        )
         self.assertEqual(control.second_byte, 0xF0)
         self.assertTrue(control.single_picture_scene_end)
         self.assertFalse(control.multiple_picture_scene_end)
@@ -215,6 +222,19 @@ class PictureTests(unittest.TestCase):
         self.assertEqual(control.candidate_addresses[0].absolute_sector, 14290)
         self.assertEqual(control.candidate_addresses[0].raw, bytes(groups[0]))
         self.assertEqual(control.trailing_bytes, b"\xde\xad\xbe\xef")
+
+    def test_f2_tentative_control_flag_combinations(self):
+        cases = {
+            0x24: ControlFlags.PARAMETERIZED | ControlFlags.NAVIGATION,
+            0x44: ControlFlags.MULTIPLE_PICTURE_END | ControlFlags.NAVIGATION,
+            0x50: ControlFlags.MULTIPLE_PICTURE_END | ControlFlags.GROUPED_SELECTION,
+            0x60: ControlFlags.MULTIPLE_PICTURE_END | ControlFlags.PARAMETERIZED,
+            0xA0: ControlFlags.SINGLE_PICTURE_END | ControlFlags.PARAMETERIZED,
+        }
+        for raw_flags, expected in cases.items():
+            with self.subTest(raw_flags=raw_flags):
+                control = ControlStream.from_bytes(bytes((raw_flags,)) + bytes(33))
+                self.assertEqual(control.flags, expected)
 
     def test_f2_control_requires_the_complete_marker_free_record(self):
         for size in (0, 33, 35):

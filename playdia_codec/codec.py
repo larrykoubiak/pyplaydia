@@ -6,7 +6,7 @@ Copyright (c) 2026, Aloys (AloysHF). BSD-3-Clause; see
 """
 
 from dataclasses import dataclass, field
-from enum import IntEnum
+from enum import IntEnum, IntFlag
 from pathlib import Path
 from typing import ClassVar
 
@@ -33,6 +33,22 @@ class ControlInput(IntEnum):
     UP = 4
     DOWN = 5
     NO_INPUT = 6
+
+
+class ControlFlags(IntFlag):
+    """Observed bit layout of the first byte after an F2 marker.
+
+    The two scene-ending names are exact correlations across the investigated
+    Dragon Ball and Sailor Moon discs.  The three lower-bit names are tentative
+    descriptions of their route-table shapes, not established hardware
+    operations.
+    """
+
+    NAVIGATION = 0x04
+    GROUPED_SELECTION = 0x10
+    PARAMETERIZED = 0x20
+    MULTIPLE_PICTURE_END = 0x40
+    SINGLE_PICTURE_END = 0x80
 
 
 SECTOR_SIZE = 0x800
@@ -271,12 +287,12 @@ class ControlStream:
     CANDIDATE_COUNT = 7
     CANDIDATE_START = 2  # Stream index; payload offset 3 includes the F2.
     CANDIDATE_SIZE = 4
-    SINGLE_PICTURE_END_BIT = 0x80
-    MULTIPLE_PICTURE_END_BIT = 0x40
+    SINGLE_PICTURE_END_BIT = ControlFlags.SINGLE_PICTURE_END
+    MULTIPLE_PICTURE_END_BIT = ControlFlags.MULTIPLE_PICTURE_END
 
     def __init__(self, data: bytes | bytearray | None = None):
         self.stream = ConstBitStream(bytes=b"" if data is None else bytes(data))
-        self.flags: int | None = None
+        self.flags: ControlFlags | None = None
         self.second_byte: int | None = None
         self.candidate_addresses: tuple[CandidateAddress, ...] = ()
         self.trailing_bytes = b""
@@ -294,7 +310,7 @@ class ControlStream:
         if len(raw) != self.SIZE:
             raise ValueError(f"Expected exactly {self.SIZE} F2 control bytes, got {len(raw)}")
 
-        self.flags = raw[0]
+        self.flags = ControlFlags(raw[0])
         self.second_byte = raw[1]
         addresses = []
         for slot in range(self.CANDIDATE_COUNT):
@@ -319,10 +335,10 @@ class ControlStream:
 
     @property
     def unresolved_flag_bits(self) -> int | None:
-        """Return the lower six bits, whose meanings remain unresolved."""
+        """Return all six lower bits, including the tentative mode flags."""
         if self.flags is None:
             return None
-        return self.flags & ~(self.SINGLE_PICTURE_END_BIT | self.MULTIPLE_PICTURE_END_BIT)
+        return int(self.flags) & 0x3F
 
 
 class Picture:

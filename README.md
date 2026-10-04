@@ -154,14 +154,20 @@ applicable.
 The stored streams use `bitstring.ConstBitStream`: their bits are read-only,
 while `.pos` remains available for inspection and seeking.
 `picture.control_stream.stream` retains all 34 bytes after the F2 marker.
-`flags` and `second_byte` expose the first two bytes, while
+`flags` exposes the first byte as `ControlFlags`, and `second_byte` retains the
+following raw byte. `ControlFlags.MULTIPLE_PICTURE_END` and
+`SINGLE_PICTURE_END` name the observed high-bit correlations. The lower
+`NAVIGATION`, `GROUPED_SELECTION`, and `PARAMETERIZED` names are tentative
+descriptions of route-table shapes rather than established console operations.
 `candidate_addresses` exposes the seven provisional four-byte groups at F2
 payload offsets `0x03, 0x07, ..., 0x1B`. Their `input` properties identify the
 observed selectors, in order: B, A, Right, Left, Up, Down, and no input. Each
 group exposes the observed MSF-like expansion as `msf == (M, S, U * 5)`; `lba`
 then subtracts the usual 150-sector lead-in. Neither property checks whether
-the group is a real destination. The unresolved fourth byte and the record's
-four `trailing_bytes` remain intact. The `single_picture_scene_end` and
+the group is a real destination. The fourth byte remains exposed as `fourth`;
+current evidence suggests a per-route value or argument, but its exact
+interpretation is unresolved. The record's four `trailing_bytes` also remain
+intact. The `single_picture_scene_end` and
 `multiple_picture_scene_end` booleans report the observed high-bit correlations,
 not established playback commands. Each row's `first_luma_dc` property exposes
 its first decoded luminance DC coefficient.
