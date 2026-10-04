@@ -32,6 +32,22 @@ Disabling [annotation typing](https://cython.readthedocs.io/en/latest/src/usergu
 keeps the build from enforcing Python type hints at runtime.
 Cython is an optional build tool, not a requirement for running the source.
 
+## Experimental interactive player
+
+Install the optional pygame frontend and open a disc:
+
+```sh
+venv/bin/python -m pip install -r requirements-player.txt
+venv/bin/python main.py -c 'input/game.cue' --play
+```
+
+The player follows the active picture's provisional F2 routes. Use the arrow
+keys for the directional inputs, `X` for A, `Z` for B, and Escape to quit.
+It follows the no-input route at an observed multiple-picture ending and holds
+an observed single-picture ending indefinitely. Timers, special return targets
+and route values are not interpreted yet; unresolved routes remain on the
+current picture. `--gui` is accepted as an alias for `--play`.
+
 ## Project layout
 
 - `main.py`: disc extraction CLI.
@@ -39,6 +55,7 @@ Cython is an optional build tool, not a requirement for running the source.
 - `control_dump.py`: complete raw F2 sectors and a byte CSV for inspection.
 - `playdia_codec/`: working video/audio decoders and lossless AVI export.
   `adpcm.py` supplies native-rate mono/stereo PCM for both WAV and AVI.
+- `playdia_player/`: headless playback/navigation and the optional pygame UI.
 - `tests/`: synthetic regression tests.
 - `doc/`: historical research material, retained for reference.
 

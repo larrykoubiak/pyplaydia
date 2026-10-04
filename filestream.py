@@ -1,6 +1,7 @@
 import os
 import re
 from contextlib import ExitStack
+from threading import RLock
 from sector import Sector, Submodes
 from pathlib import Path
 
@@ -46,6 +47,7 @@ class Imagestream():
     def __init__(self, filepath=None):
         self.__streams = []
         self.__sectors = []
+        self.__io_lock = RLock()
         try:
             if filepath:
                 self.__readcue(filepath)
@@ -101,32 +103,34 @@ class Imagestream():
                 index += 2352
 
     def Read(self, buffer, LBA, count):
-        bytesread = 0
-        lba = LBA
-        while bytesread < count:
-            sector = self.__sectors[lba]
-            sectorlen = 2324 if (sector.Submode & Submodes.Form) else 2048
-            fs = self.__streams[sector.FileStreamId]
-            fs.Stream.seek(sector.FileStreamOffset + 24, 0)
-            sectordata = fs.Stream.read(sectorlen)
-            if (count-bytesread) > sectorlen:
-                buffer[bytesread:bytesread+sectorlen] = sectordata
-                bytesread += sectorlen
-                lba += 1
-            else:
-                remainderlen = count-bytesread
-                buffer[bytesread:bytesread+remainderlen] = sectordata[:remainderlen]
-                bytesread += remainderlen
+        with self.__io_lock:
+            bytesread = 0
+            lba = LBA
+            while bytesread < count:
+                sector = self.__sectors[lba]
+                sectorlen = 2324 if (sector.Submode & Submodes.Form) else 2048
+                fs = self.__streams[sector.FileStreamId]
+                fs.Stream.seek(sector.FileStreamOffset + 24, 0)
+                sectordata = fs.Stream.read(sectorlen)
+                if (count-bytesread) > sectorlen:
+                    buffer[bytesread:bytesread+sectorlen] = sectordata
+                    bytesread += sectorlen
+                    lba += 1
+                else:
+                    remainderlen = count-bytesread
+                    buffer[bytesread:bytesread+remainderlen] = sectordata[:remainderlen]
+                    bytesread += remainderlen
         return bytesread
 
     def ReadSector(self, LBA) -> Sector:
-        sector = self.__sectors[LBA]
-        fs = self.__streams[sector.FileStreamId]
-        sectorlen = 2324 if (sector.Submode & Submodes.Form) else 2048
-        ecclen = 2352 - sectorlen - 24
-        fs.Stream.seek(sector.FileStreamOffset + 24, 0)
-        sector.Data = fs.Stream.read(sectorlen)
-        sector.ECC = fs.Stream.read(ecclen)
+        with self.__io_lock:
+            sector = self.__sectors[LBA]
+            fs = self.__streams[sector.FileStreamId]
+            sectorlen = 2324 if (sector.Submode & Submodes.Form) else 2048
+            ecclen = 2352 - sectorlen - 24
+            fs.Stream.seek(sector.FileStreamOffset + 24, 0)
+            sector.Data = fs.Stream.read(sectorlen)
+            sector.ECC = fs.Stream.read(ecclen)
         return sector
 
     def Write(self, path, name):

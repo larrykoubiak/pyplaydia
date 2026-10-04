@@ -362,5 +362,10 @@ class ISOImage():
         return self.__volumedescriptors
 
     @property
+    def ImageStream(self):
+        """Underlying sector stream for interactive, LBA-addressed readers."""
+        return self.__imagestream
+
+    @property
     def Files(self):
         return [f for f in self.__rootDirectory.Children if not (f.FileFlags & FileFlags.Directory)]

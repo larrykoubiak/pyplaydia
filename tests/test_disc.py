@@ -96,7 +96,7 @@ class CliTests(unittest.TestCase):
                 image.assert_not_called()
 
     def test_missing_cue_and_negative_limit_fail_before_opening_a_disc(self):
-        for args, message in ((["-a"], "--cue_path is required"), (["--controls"], "--cue_path is required"), (["-v", "-c", "missing.cue", "-l", "-1"], "--limit must be zero or greater")):
+        for args, message in ((["-a"], "--cue_path is required"), (["--controls"], "--cue_path is required"), (["--play"], "--cue_path is required"), (["-v", "-c", "missing.cue", "-l", "-1"], "--limit must be zero or greater")):
             with self.subTest(args=args), patch("main.ISOImage") as image, redirect_stderr(io.StringIO()) as output:
                 with self.assertRaises(SystemExit) as error:
                     main(args)

@@ -13,15 +13,28 @@ def main(argv=None):
     parser.add_argument("-v", "--video", action="store_true", help="Export lossless PNG/PCM AVI clips (default=False)")
     parser.add_argument("-f", "--frame", action="store_true", help="Decode video frames to PNG (default=False)")
     parser.add_argument("--controls", action="store_true", help="Dump every F2 sector as raw BIN and byte CSV, without interpretation")
+    parser.add_argument("--play", "--gui", action="store_true", help="Open the experimental interactive player")
 
     args = parser.parse_args(argv)
     if args.limit < 0:
         parser.error("--limit must be zero or greater")
-    if not (args.audio or args.video or args.frame or args.controls):
+    extraction_modes = args.audio or args.video or args.frame or args.controls
+    if args.play and extraction_modes:
+        parser.error("--play cannot be combined with extraction modes")
+    if not (extraction_modes or args.play):
         parser.print_help()
         return 0
     if not args.cue_path:
-        parser.error("--cue_path is required for extraction")
+        parser.error("--cue_path is required for extraction or playback")
+
+    if args.play:
+        try:
+            from playdia_player.pygame_frontend import run_player
+            return run_player(args.cue_path)
+        except ModuleNotFoundError as exc:
+            if exc.name == "pygame":
+                parser.error("--play requires pygame-ce; install requirements-player.txt")
+            raise
 
     if args.controls:
         print(f"Scanning {args.cue_path} for all F2 sectors...", flush=True)
