@@ -43,6 +43,8 @@ venv/bin/python main.py -c 'input/game.cue' --play
 
 The player follows the active picture's provisional F2 routes. Use the arrow
 keys for the directional inputs, `X` for A, `Z` for B, and Escape to quit.
+SDL-compatible controllers can use the D-pad or left stick; controller A maps
+to Playdia B and controller B maps to Playdia A to preserve their positions.
 Disc sectors are read through a rolling two-second window; pictures decode in
 the background and normalized PCM feeds a continuous audio-device buffer, so
 an unprefetched button route does not scan its complete destination scene first.

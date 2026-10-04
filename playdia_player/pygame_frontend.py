@@ -15,6 +15,61 @@ WINDOW_SCALE = 3
 DECODE_AHEAD = 12
 AUDIO_DEVICE_FRAMES = 4096
 AUDIO_FRAME_BYTES = OUTPUT_CHANNELS * 2
+STICK_PRESS_THRESHOLD = 16384
+STICK_RELEASE_THRESHOLD = 8192
+
+
+class GamepadInputMapper:
+    """Map SDL's standardized controller layout to Playdia controls."""
+
+    def __init__(self, pygame):
+        self.left_x = pygame.CONTROLLER_AXIS_LEFTX
+        self.left_y = pygame.CONTROLLER_AXIS_LEFTY
+        self.button_map = {
+            # Xbox labels are reversed relative to the Playdia's physical
+            # A/B placement, so preserve the buttons' positions here.
+            pygame.CONTROLLER_BUTTON_A: ControlInput.B,
+            pygame.CONTROLLER_BUTTON_B: ControlInput.A,
+            pygame.CONTROLLER_BUTTON_DPAD_RIGHT: ControlInput.RIGHT,
+            pygame.CONTROLLER_BUTTON_DPAD_LEFT: ControlInput.LEFT,
+            pygame.CONTROLLER_BUTTON_DPAD_UP: ControlInput.UP,
+            pygame.CONTROLLER_BUTTON_DPAD_DOWN: ControlInput.DOWN,
+        }
+        self.axes = {}
+        self.active_directions = {}
+
+    def button_down(self, button):
+        return self.button_map.get(button)
+
+    def axis_motion(self, instance_id, axis, value):
+        if axis not in (self.left_x, self.left_y):
+            return None
+        values = self.axes.setdefault(instance_id, [0, 0])
+        values[1 if axis == self.left_y else 0] = value
+        x, y = values
+        magnitude = max(abs(x), abs(y))
+        current = self.active_directions.get(instance_id)
+
+        if current is not None:
+            if magnitude <= STICK_RELEASE_THRESHOLD:
+                self.active_directions.pop(instance_id, None)
+            return None
+
+        if magnitude < STICK_PRESS_THRESHOLD:
+            return None
+        candidate = self._direction(x, y)
+        self.active_directions[instance_id] = candidate
+        return candidate
+
+    def remove(self, instance_id):
+        self.axes.pop(instance_id, None)
+        self.active_directions.pop(instance_id, None)
+
+    @staticmethod
+    def _direction(x, y):
+        if abs(x) >= abs(y):
+            return ControlInput.RIGHT if x > 0 else ControlInput.LEFT
+        return ControlInput.DOWN if y > 0 else ControlInput.UP
 
 
 class FrameDecoder:
@@ -221,6 +276,32 @@ def run_player(cue_path) -> int:
         pygame.K_UP: ControlInput.UP,
         pygame.K_DOWN: ControlInput.DOWN,
     }
+    gamepad = GamepadInputMapper(pygame)
+    controllers = {}
+    controller_api = None
+    try:
+        import pygame._sdl2.controller as controller_api
+
+        controller_api.init()
+    except (ImportError, pygame.error):
+        controller_api = None
+
+    def open_controller(device_index):
+        if controller_api is None or not controller_api.is_controller(device_index):
+            return
+        try:
+            controller = controller_api.Controller(device_index)
+        except pygame.error:
+            return
+        if controller.id in controllers:
+            controller.quit()
+        else:
+            controllers[controller.id] = controller
+
+    if controller_api is not None:
+        for device_index in range(controller_api.get_count()):
+            open_controller(device_index)
+
     seen_generation = -1
     seen_frame = (-1, -1)
     surface = None
@@ -245,6 +326,23 @@ def run_player(cue_path) -> int:
                             running = False
                         elif event.key in keymap:
                             player.press(keymap[event.key])
+                    elif event.type == pygame.CONTROLLERDEVICEADDED:
+                        open_controller(event.device_index)
+                    elif event.type == pygame.CONTROLLERDEVICEREMOVED:
+                        controller = controllers.pop(event.instance_id, None)
+                        if controller is not None:
+                            controller.quit()
+                        gamepad.remove(event.instance_id)
+                    elif event.type == pygame.CONTROLLERBUTTONDOWN:
+                        input_value = gamepad.button_down(event.button)
+                        if input_value is not None:
+                            player.press(input_value)
+                    elif event.type == pygame.CONTROLLERAXISMOTION:
+                        input_value = gamepad.axis_motion(
+                            event.instance_id, event.axis, event.value
+                        )
+                        if input_value is not None:
+                            player.press(input_value)
 
                 if player.generation != seen_generation:
                     audio.reset()
@@ -319,6 +417,10 @@ def run_player(cue_path) -> int:
                     f"pyplaydia - {player.state.value} - LBA {lba} - {player.message}"
                 )
     finally:
+        for controller in controllers.values():
+            controller.quit()
+        if controller_api is not None:
+            controller_api.quit()
         audio.close()
         decoder.close()
         pygame.quit()

@@ -11,7 +11,11 @@ from main import main
 from playdia_codec import ControlInput
 from playdia_player.audio import normalize_pcm
 from playdia_player.engine import PlaybackEngine, PlaybackState, READ_AHEAD_TICKS
-from playdia_player.pygame_frontend import AudioStream
+from playdia_player.pygame_frontend import (
+    AudioStream,
+    GamepadInputMapper,
+    STICK_PRESS_THRESHOLD,
+)
 from sector import Codings, Submodes
 from test_playdia_codec import picture_bytes, sectors
 
@@ -106,6 +110,56 @@ class AudioStreamTests(unittest.TestCase):
         audio.close()
         self.assertEqual(device.pauses, [0, 1])
         self.assertTrue(device.closed)
+
+
+class GamepadInputTests(unittest.TestCase):
+    def make_mapper(self):
+        constants = SimpleNamespace(
+            CONTROLLER_AXIS_LEFTX=0,
+            CONTROLLER_AXIS_LEFTY=1,
+            CONTROLLER_BUTTON_A=0,
+            CONTROLLER_BUTTON_B=1,
+            CONTROLLER_BUTTON_DPAD_UP=11,
+            CONTROLLER_BUTTON_DPAD_DOWN=12,
+            CONTROLLER_BUTTON_DPAD_LEFT=13,
+            CONTROLLER_BUTTON_DPAD_RIGHT=14,
+        )
+        return GamepadInputMapper(constants)
+
+    def test_face_buttons_are_positionally_swapped_and_dpad_maps_directly(self):
+        mapper = self.make_mapper()
+        self.assertEqual(mapper.button_down(0), ControlInput.B)
+        self.assertEqual(mapper.button_down(1), ControlInput.A)
+        self.assertEqual(mapper.button_down(11), ControlInput.UP)
+        self.assertEqual(mapper.button_down(12), ControlInput.DOWN)
+        self.assertEqual(mapper.button_down(13), ControlInput.LEFT)
+        self.assertEqual(mapper.button_down(14), ControlInput.RIGHT)
+        self.assertIsNone(mapper.button_down(2))
+
+    def test_left_stick_emits_once_per_deflection_with_a_dead_zone(self):
+        mapper = self.make_mapper()
+        controller = 42
+        self.assertIsNone(mapper.axis_motion(controller, 0, STICK_PRESS_THRESHOLD - 1))
+        self.assertEqual(
+            mapper.axis_motion(controller, 0, STICK_PRESS_THRESHOLD),
+            ControlInput.RIGHT,
+        )
+        self.assertIsNone(mapper.axis_motion(controller, 0, 32767))
+        self.assertIsNone(mapper.axis_motion(controller, 0, 0))
+        self.assertEqual(
+            mapper.axis_motion(controller, 1, -STICK_PRESS_THRESHOLD),
+            ControlInput.UP,
+        )
+        self.assertIsNone(mapper.axis_motion(controller, 1, 0))
+        self.assertEqual(
+            mapper.axis_motion(controller, 0, -STICK_PRESS_THRESHOLD),
+            ControlInput.LEFT,
+        )
+        mapper.remove(controller)
+        self.assertEqual(
+            mapper.axis_motion(controller, 1, STICK_PRESS_THRESHOLD),
+            ControlInput.DOWN,
+        )
 
 
 class PlayerEngineTests(unittest.TestCase):
