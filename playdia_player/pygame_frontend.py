@@ -1,49 +1,51 @@
-"""Minimal pygame-ce window, input and audio adapter."""
+"""Minimal pygame-ce window, input, video and streaming-audio adapter."""
 
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
+from time import monotonic
 
 from playdia_codec import ControlInput, Picture
 
-from .audio import OUTPUT_CHANNELS, OUTPUT_RATE, normalize_pcm
-from .engine import DiscPlayer, PlaybackState
+from .audio import OUTPUT_CHANNELS, OUTPUT_RATE
+from .engine import DiscPlayer
 
 
 WINDOW_SCALE = 3
 DECODE_AHEAD = 12
-SEGMENT_PREFETCH_SECONDS = 2.0
+AUDIO_DEVICE_FRAMES = 4096
+AUDIO_FRAME_BYTES = OUTPUT_CHANNELS * 2
 
 
 class FrameDecoder:
-    """Decode a short rolling window without blocking pygame's event loop."""
+    """Decode a rolling frame window without blocking pygame's event loop."""
 
     def __init__(self):
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="playdia-video")
         self.generation = None
-        self.frames = ()
         self.futures = {}
 
-    def reset(self, generation, frames):
+    def reset(self, generation):
         for future in self.futures.values():
             future.cancel()
         self.generation = generation
-        self.frames = frames
         self.futures = {}
-        self.prefetch(0)
 
-    def prefetch(self, frame_index):
-        if frame_index < 0:
-            frame_index = 0
-        first = max(0, frame_index - 1)
-        stop = min(len(self.frames), frame_index + DECODE_AHEAD)
-        for index in range(first, stop):
-            if index not in self.futures:
-                self.futures[index] = self.executor.submit(self.frames[index].decode_rgb)
-        for index in tuple(self.futures):
-            if index < frame_index - 2:
-                del self.futures[index]
+    def sync(self, generation, frames):
+        if generation != self.generation:
+            self.reset(generation)
+        wanted = frames[:DECODE_AHEAD]
+        wanted_lbas = {frame.lba for frame in wanted}
+        for lba in tuple(self.futures):
+            if lba not in wanted_lbas:
+                self.futures[lba].cancel()
+                del self.futures[lba]
+        for frame in wanted:
+            if frame.lba not in self.futures:
+                self.futures[frame.lba] = self.executor.submit(frame.decode_rgb)
 
-    def result(self, frame_index):
-        future = self.futures.get(frame_index)
+    def result(self, frame):
+        future = self.futures.get(frame.lba)
         if future is None or not future.done():
             return None
         return future.result()
@@ -52,14 +54,159 @@ class FrameDecoder:
         self.executor.shutdown(wait=True, cancel_futures=True)
 
 
+class AudioStream:
+    """Continuously feed PCM to SDL and expose the samples actually heard."""
+
+    def __init__(self, device_factory=None, audio_format=None, clock=monotonic):
+        if device_factory is None:
+            from pygame._sdl2.audio import AUDIO_S16, AudioDevice
+
+            device_factory = AudioDevice
+            audio_format = AUDIO_S16
+
+        self.clock = clock
+        self.lock = Lock()
+        self.buffers = deque()
+        self.head_offset = 0
+        self.submitted_frames = 0
+        self.played_frames = 0
+        self.inflight_frames = 0
+        self.inflight_started_at = None
+        self.device = device_factory(
+            None,
+            False,
+            OUTPUT_RATE,
+            audio_format,
+            OUTPUT_CHANNELS,
+            AUDIO_DEVICE_FRAMES,
+            0,
+            self._callback,
+        )
+        self.device.pause(0)
+
+    def reset(self):
+        with self.lock:
+            self.buffers.clear()
+            self.head_offset = 0
+            self.submitted_frames = 0
+            self.played_frames = 0
+            self.inflight_frames = 0
+            self.inflight_started_at = None
+
+    def extend(self, chunks):
+        chunks = tuple(bytes(chunk) for chunk in chunks)
+        if any(len(chunk) % AUDIO_FRAME_BYTES for chunk in chunks):
+            raise ValueError("PCM chunks must contain complete stereo sample frames")
+        if not chunks:
+            return
+        with self.lock:
+            self.buffers.extend(chunks)
+            self.submitted_frames += sum(len(chunk) for chunk in chunks) // AUDIO_FRAME_BYTES
+
+    def _callback(self, device, stream):
+        """Fill one device buffer; exceptions must never escape SDL's thread."""
+        try:
+            requested = len(stream)
+            output = bytearray(requested)
+            written = 0
+            now = self.clock()
+            with self.lock:
+                # The preceding callback buffer has reached the speakers now.
+                self.played_frames += self.inflight_frames
+                while written < requested and self.buffers:
+                    chunk = self.buffers[0]
+                    available = len(chunk) - self.head_offset
+                    count = min(requested - written, available)
+                    output[written:written + count] = chunk[
+                        self.head_offset:self.head_offset + count
+                    ]
+                    written += count
+                    self.head_offset += count
+                    if self.head_offset == len(chunk):
+                        self.buffers.popleft()
+                        self.head_offset = 0
+                self.inflight_frames = written // AUDIO_FRAME_BYTES
+                self.inflight_started_at = now
+            stream[:] = output
+        except BaseException:
+            # Exceptions escaping an SDL audio callback can terminate the
+            # process. Preserve silence even if malformed data slips through.
+            try:
+                stream[:] = bytes(len(stream))
+            except BaseException:
+                pass
+
+    def _snapshot(self):
+        with self.lock:
+            return (
+                self.played_frames,
+                self.inflight_frames,
+                self.inflight_started_at,
+                bool(self.buffers),
+            )
+
+    @property
+    def position(self):
+        played, inflight, started_at, _ = self._snapshot()
+        if started_at is not None:
+            elapsed_frames = max(0.0, self.clock() - started_at) * OUTPUT_RATE
+            played += min(inflight, elapsed_frames)
+        return played / OUTPUT_RATE
+
+    @property
+    def drained(self):
+        _, inflight, started_at, buffered = self._snapshot()
+        if buffered:
+            return False
+        if started_at is None:
+            return True
+        return (self.clock() - started_at) * OUTPUT_RATE >= inflight
+
+    @property
+    def has_audio(self):
+        with self.lock:
+            return self.submitted_frames > 0
+
+    def close(self):
+        device, self.device = self.device, None
+        if device is not None:
+            device.pause(1)
+            device.close()
+
+
+class SilentAudioStream:
+    """Wall-clock fallback used when SDL cannot open an audio device."""
+
+    has_audio = False
+    drained = True
+    position = 0.0
+
+    def reset(self):
+        pass
+
+    def extend(self, chunks):
+        pass
+
+    def close(self):
+        pass
+
+
 def run_player(cue_path) -> int:
     # Kept local so extraction remains usable without the optional dependency.
     import pygame
 
-    # Video decoding is CPU-heavy. A ~108 ms device buffer avoids underruns
-    # while still allowing prompt stops when an input takes another route.
-    pygame.mixer.pre_init(OUTPUT_RATE, -16, OUTPUT_CHANNELS, 4096)
     pygame.init()
+    # mixer.Channel.queue only retains one sound and loses handoffs when video
+    # decoding stalls the UI. Use SDL's continuous callback device instead.
+    pygame.mixer.quit()
+    try:
+        from pygame._sdl2 import INIT_AUDIO, init_subsystem
+
+        init_subsystem(INIT_AUDIO)
+        audio = AudioStream()
+    except (ImportError, pygame.error):
+        audio = SilentAudioStream()
+
     pygame.display.set_caption("pyplaydia")
     screen = pygame.display.set_mode(
         (Picture.width * WINDOW_SCALE, Picture.height * WINDOW_SCALE),
@@ -74,8 +221,6 @@ def run_player(cue_path) -> int:
         pygame.K_UP: ControlInput.UP,
         pygame.K_DOWN: ControlInput.DOWN,
     }
-    audio_available = pygame.mixer.get_init() is not None
-    audio_channel = None
     seen_generation = -1
     seen_frame = (-1, -1)
     surface = None
@@ -87,8 +232,11 @@ def run_player(cue_path) -> int:
 
     try:
         with DiscPlayer(cue_path) as player:
+            # Discard ISO/player construction time; scene zero has not started.
+            clock.tick()
             while running:
                 elapsed = clock.tick(60) / 1000.0
+                generation_before_input = player.generation
                 for event in pygame.event.get():
                     if event.type == pygame.QUIT:
                         running = False
@@ -98,36 +246,51 @@ def run_player(cue_path) -> int:
                         elif event.key in keymap:
                             player.press(keymap[event.key])
 
-                player.advance(elapsed)
-                if (
-                    player.state is PlaybackState.PLAYING
-                    and player.segment.duration - player.playhead <= SEGMENT_PREFETCH_SECONDS
-                ):
-                    player.prefetch_automatic_segment()
-
                 if player.generation != seen_generation:
-                    if audio_channel is not None:
-                        audio_channel.stop()
-                        audio_channel = None
-                    decoder.reset(player.generation, player.segment.frames)
+                    audio.reset()
+                    decoder.reset(player.generation)
                     surface = None
                     scaled_surface = None
                     scaled_key = None
                     seen_frame = (-1, -1)
-                    if audio_available and player.segment.pcm:
-                        pcm = normalize_pcm(
-                            player.segment.pcm,
-                            player.segment.sample_rate,
-                            player.segment.channels,
-                        )
-                        audio_channel = pygame.mixer.Sound(buffer=pcm).play()
                     seen_generation = player.generation
 
+                audio.extend(player.take_audio_chunks())
+
+                # A button jump begins now; elapsed time from the previous
+                # scene must not be charged to the new destination. Audio is
+                # the master clock when present, so an underrun also pauses
+                # video instead of accumulating A/V drift.
+                generation_before_advance = player.generation
+                if audio.has_audio:
+                    player.advance_to(audio.position)
+                    if (
+                        player.generation == generation_before_advance
+                        and audio.drained
+                        and player.segment.stop_lba is not None
+                    ):
+                        # Let a scene finish if its audio legitimately ends
+                        # before the physical sector stream does.
+                        player.advance(elapsed)
+                elif player.generation == generation_before_input:
+                    player.advance(elapsed)
+
+                if player.generation != generation_before_advance:
+                    audio.reset()
+                    decoder.reset(player.generation)
+                    surface = None
+                    scaled_surface = None
+                    scaled_key = None
+                    seen_frame = (-1, -1)
+                    seen_generation = player.generation
+
+                audio.extend(player.take_audio_chunks())
+                frames = player.segment.frames
+                decoder.sync(player.generation, frames)
                 frame = player.current_frame
-                frame_key = (player.generation, player.frame_index)
+                frame_key = (player.generation, frame.lba if frame is not None else -1)
                 if frame is not None:
-                    decoder.prefetch(player.frame_index)
-                    rgb = decoder.result(player.frame_index)
+                    rgb = decoder.result(frame)
                     if rgb is not None and frame_key != seen_frame:
                         surface = pygame.image.frombytes(
                             rgb, (Picture.width, Picture.height), "RGB"
@@ -156,8 +319,7 @@ def run_player(cue_path) -> int:
                     f"pyplaydia - {player.state.value} - LBA {lba} - {player.message}"
                 )
     finally:
-        if audio_channel is not None:
-            audio_channel.stop()
+        audio.close()
         decoder.close()
         pygame.quit()
     return 0

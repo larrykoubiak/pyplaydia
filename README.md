@@ -43,6 +43,11 @@ venv/bin/python main.py -c 'input/game.cue' --play
 
 The player follows the active picture's provisional F2 routes. Use the arrow
 keys for the directional inputs, `X` for A, `Z` for B, and Escape to quit.
+Disc sectors are read through a rolling two-second window; pictures decode in
+the background and normalized PCM feeds a continuous audio-device buffer, so
+an unprefetched button route does not scan its complete destination scene first.
+Presented audio samples provide the playback clock, keeping sector-timed video
+at its native cadence (including 10 fps material) without accumulating drift.
 It follows the no-input route at an observed multiple-picture ending and holds
 an observed single-picture ending indefinitely. Timers, special return targets
 and route values are not interpreted yet; unresolved routes remain on the

@@ -10,7 +10,8 @@ from unittest.mock import patch
 from main import main
 from playdia_codec import ControlInput
 from playdia_player.audio import normalize_pcm
-from playdia_player.engine import PlaybackEngine, PlaybackState, SegmentReader
+from playdia_player.engine import PlaybackEngine, PlaybackState, READ_AHEAD_TICKS
+from playdia_player.pygame_frontend import AudioStream
 from sector import Codings, Submodes
 from test_playdia_codec import picture_bytes, sectors
 
@@ -59,6 +60,54 @@ class AudioNormalizationTests(unittest.TestCase):
                 normalize_pcm(*arguments)
 
 
+class AudioStreamTests(unittest.TestCase):
+    def test_callback_clock_counts_played_pcm_but_not_underrun_silence(self):
+        now = [10.0]
+        devices = []
+
+        class FakeDevice:
+            def __init__(self, *arguments):
+                self.callback = arguments[-1]
+                self.pauses = []
+                self.closed = False
+                devices.append(self)
+
+            def pause(self, value):
+                self.pauses.append(value)
+
+            def close(self):
+                self.closed = True
+
+        audio = AudioStream(FakeDevice, 0, clock=lambda: now[0])
+        device = devices[0]
+        pcm = bytes(range(24))  # Six stereo sample frames.
+        audio.extend((pcm[:12], pcm[12:]))
+
+        first = bytearray(16)
+        device.callback(device, first)
+        self.assertEqual(first, pcm[:16])
+        self.assertEqual(audio.position, 0.0)
+
+        now[0] += 2 / 37800
+        self.assertAlmostEqual(audio.position, 2 / 37800)
+        now[0] += 2 / 37800
+
+        second = bytearray(16)
+        device.callback(device, second)
+        self.assertEqual(second, pcm[16:] + bytes(8))
+        self.assertAlmostEqual(audio.position, 4 / 37800)
+
+        now[0] += 10 / 37800
+        self.assertAlmostEqual(audio.position, 6 / 37800)
+        self.assertTrue(audio.drained)
+        audio.reset()
+        self.assertFalse(audio.has_audio)
+        self.assertEqual(audio.position, 0.0)
+        audio.close()
+        self.assertEqual(device.pauses, [0, 1])
+        self.assertTrue(device.closed)
+
+
 class PlayerEngineTests(unittest.TestCase):
     def make_stream(self):
         first = controlled_picture(0x44, [
@@ -77,10 +126,11 @@ class PlayerEngineTests(unittest.TestCase):
             sector(b"", Submodes.EOF),
         ])
 
-    def test_segment_reader_decodes_timed_picture_and_boundary(self):
+    def test_initial_buffer_collects_packet_without_decoding_it(self):
         with patch("playdia_player.engine.Picture.from_bytes") as decode:
-            segment = SegmentReader(self.make_stream()).read(0)
+            engine = PlaybackEngine(self.make_stream(), 0)
         decode.assert_not_called()
+        segment = engine.segment
         self.assertEqual((segment.start_lba, segment.stop_lba), (0, 2))
         self.assertEqual(len(segment.frames), 1)
         self.assertEqual((segment.frames[0].lba, segment.frames[0].tick), (0, 0))
@@ -95,6 +145,31 @@ class PlayerEngineTests(unittest.TestCase):
         self.assertEqual(engine.last_transition.value, 0x2A)
         self.assertIn("value 2A", engine.message)
 
+    def test_route_can_land_in_an_f1_continuation_and_resynchronize(self):
+        first = controlled_picture(0x44, [(ControlInput.A, 5, 0)])
+        destination = controlled_picture(0x80)
+        track = [
+            sector(first[:2048]),
+            sector(first[2048:], Submodes.Data | Submodes.EOR),
+            sector(bytes(2048)),
+            sector(bytes(2048)),
+            sector(bytes(2048)),
+            sector(bytes((0xF1,)) + bytes(2047)),
+            sector(bytes((0xF2,)) + bytes(2047)),
+            sector(bytes(2048)),
+            sector(destination[:2048]),
+            sector(destination[2048:], Submodes.Data | Submodes.EOR),
+            sector(b"", Submodes.EOF),
+        ]
+
+        engine = PlaybackEngine(fake_stream(track), 0)
+        self.assertTrue(engine.press(ControlInput.A))
+        self.assertEqual(engine.segment.start_lba, 5)
+        self.assertIsNone(engine.current_frame)
+        engine.advance_to(3 / 75)
+        self.assertEqual(engine.current_frame.lba, 8)
+        self.assertEqual(len(engine.current_frame.decode_rgb()), 248 * 216 * 3)
+
     def test_multi_picture_end_auto_routes_and_single_picture_end_holds(self):
         engine = PlaybackEngine(self.make_stream(), 0)
         engine.advance(2 / 75)
@@ -104,15 +179,54 @@ class PlayerEngineTests(unittest.TestCase):
         self.assertEqual(engine.state, PlaybackState.HOLDING)
         self.assertEqual(engine.current_frame.lba, 5)
 
-    def test_automatic_destination_can_be_prefetched_and_reused(self):
-        engine = PlaybackEngine(self.make_stream(), 0)
-        with patch.object(engine.reader, "read", wraps=engine.reader.read) as read:
-            self.assertTrue(engine.prefetch_automatic_segment())
-            engine._prefetched_segment.result(timeout=1)
-            engine.advance(2 / 75)
-        self.assertEqual(engine.segment.start_lba, 5)
-        self.assertEqual(read.call_count, 1)
-        engine.close()
+    def test_reader_keeps_a_two_second_rolling_horizon(self):
+        packet = controlled_picture(0)
+        track = [sector(packet[:2048]), sector(packet[2048:])]
+        track.extend(sector(bytes(2048)) for _ in range(298))
+        track.append(sector(b"", Submodes.EOF))
+        calls = []
+        stream = SimpleNamespace(
+            Sectors=track,
+            ReadSector=lambda index: calls.append(index) or track[index],
+        )
+        engine = PlaybackEngine(stream, 0)
+        self.assertEqual(engine.segment.cursor_lba, READ_AHEAD_TICKS)
+        self.assertIsNone(engine.segment.stop_lba)
+        self.assertLess(max(calls), READ_AHEAD_TICKS)
+        engine.advance(1)
+        self.assertEqual(engine.segment.cursor_lba, READ_AHEAD_TICKS + 75)
+
+    def test_audio_is_emitted_in_normalized_streaming_chunks(self):
+        packet = controlled_picture(0x80)
+        stream = fake_stream([
+            sector(packet[:2048]),
+            sector(packet[2048:]),
+            sector(bytes(2304), Submodes.Audio, channel=2, coding=4),
+            sector(bytes(2304), Submodes.Audio, channel=2, coding=4),
+            sector(bytes(2048), Submodes.Data | Submodes.EOR),
+            sector(b"", Submodes.EOF),
+        ])
+        engine = PlaybackEngine(stream, 0)
+        chunks = engine.take_audio_chunks()
+        self.assertEqual([len(chunk) for chunk in chunks], [37800, 26712])
+        self.assertEqual(engine.take_audio_chunks(), ())
+        self.assertAlmostEqual(engine.segment.duration, 8064 / 18900)
+
+    def test_frames_follow_sector_timestamps_instead_of_a_fixed_frame_rate(self):
+        track = [sector(bytes(2048)) for _ in range(18)]
+        for lba in (0, 7, 15):
+            packet = controlled_picture(0x80)
+            track[lba] = sector(packet[:2048])
+            track[lba + 1] = sector(packet[2048:])
+        track[16].Submode |= Submodes.EOR
+        track[17] = sector(b"", Submodes.EOF)
+
+        engine = PlaybackEngine(fake_stream(track), 0)
+        self.assertEqual(engine.current_frame.lba, 0)
+        engine.advance_to(7 / 75)
+        self.assertEqual(engine.current_frame.lba, 7)
+        engine.advance_to(15 / 75)
+        self.assertEqual(engine.current_frame.lba, 15)
 
     def test_empty_routes_do_not_restart_or_seek_negative_lba(self):
         engine = PlaybackEngine(self.make_stream(), 5)
