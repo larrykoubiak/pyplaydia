@@ -6,7 +6,9 @@ format specification. Counts describe physical disc order, not reconstructed
 gameplay. The raw dumper does not apply any of these interpretations.
 
 The working model is **video -> persistent still screen -> conditional next
-scene**, with possible branching while the video is still playing.
+scene**, with possible branching while the video is still playing. The
+2026-10-04 DRAGON2 follow-up below adds evidence from Uchuu-hen; the original
+two-disc counts remain unchanged.
 
 ## Evidence and conventions
 
@@ -174,6 +176,41 @@ logical player behavior. `b02=0x02` is a plausible timed-wait mode or parameter
 because it is invariant across all of these answer screens, but the data does
 not show whether `02` specifies a duration, selects a preset, or merely
 identifies the screen mode.
+
+### DRAGON2 opening: a single-picture ending can advance automatically
+
+The Uchuu-hen disc begins at LBA 4350 with a single QIS-logo picture. Its F2
+at LBA 4356 has `b01=0x80, b02=0x02`, six completely zero button entries,
+and no-input entry `01 00 02 00`, which expands to LBA 4360. That destination
+starts the logo animation with the same picture. The animation's final F2 at
+LBA 4696 routes to another still at LBA 4700; its F2 at 4706 has
+`b01=0x80, b02=0x03`, again six zero button entries, and no-input destination
+4710.
+
+This contradicts the player's former rule that every bit-7 ending should hold
+indefinitely: these opening stills provide no button route to leave them, but
+do supply onward no-input routes. The data supports automatic progression;
+it does not establish the delay or the units/meaning of `b02`.
+
+The experimental player now follows a valid no-input route outside the current
+scene after its physical extent finishes, provided all six button entries
+are completely zero. This is a progression approximation, not verified console
+timing. Stills with button data still hold, including the Sailor Moon quiz
+screens whose logical timeout remains unresolved. A no-input self-reference
+holds without repeatedly seeking back to the same still.
+
+The following Bandai still at LBA 4710 uses `b01=0xA0, b02=0xF0`, with
+populated button entries and a no-input route. Its automatic progression is
+still unresolved: the current player holds there, and A selects LBA 4720,
+whose default-only record then routes to 5160. This opening fix does not
+establish the full startup sequence or the behavior of `A0 F0`.
+
+Continuing along that A route also exposed an independent packet-reader bug.
+LBA 6474 is an F1 continuation in the picture beginning at 6470, but its
+payload begins `F1 00 80 0D`, coincidentally matching the 19-bit picture start
+code. F2 at 6479 ends the picture, which decodes successfully when assembled
+intact. The player now looks for a start code only when it has no active
+packet; once synchronized, it keeps F1 continuations through F2.
 
 ## Video followed by its final picture
 

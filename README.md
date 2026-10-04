@@ -50,10 +50,13 @@ the background and normalized PCM feeds a continuous audio-device buffer, so
 an unprefetched button route does not scan its complete destination scene first.
 Presented audio samples provide the playback clock, keeping sector-timed video
 at its native cadence (including 10 fps material) without accumulating drift.
-It follows the no-input route at an observed multiple-picture ending and holds
-an observed single-picture ending indefinitely. Timers, special return targets
-and route values are not interpreted yet; unresolved routes remain on the
-current picture. `--gui` is accepted as an alias for `--play`.
+It follows the no-input route at an observed multiple-picture ending. A
+single-picture ending also follows that route when all six button entries are
+empty and it leads outside the current scene; other stills hold for input.
+These automatic transitions occur when the physical scene finishes; logical
+still-screen delays, timers, special return targets and route values are not
+interpreted yet. Unresolved routes remain on the current picture. `--gui` is
+accepted as an alias for `--play`.
 
 ## Project layout
 

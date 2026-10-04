@@ -181,14 +181,12 @@ class PlaybackEngine:
         sector = self.stream.ReadSector(lba)
         data = sector.Data
         if data and data[0] == 0xF1:
-            if _starts_picture(data):
-                if segment.packet:
-                    raise PlayerError(
-                        f"Picture at LBA {segment.packet_start} has no F2 end sector"
-                    )
-                segment.packet_start = lba
+            if segment.packet:
+                # Once synchronized, F2 terminates the picture. Compressed
+                # continuation data can coincidentally match the start code.
                 segment.packet.extend(data[:2048])
-            elif segment.packet:
+            elif _starts_picture(data):
+                segment.packet_start = lba
                 segment.packet.extend(data[:2048])
         elif data and data[0] == 0xF2 and segment.packet:
             segment.packet.extend(data[:2048])
@@ -256,6 +254,19 @@ class PlaybackEngine:
 
         control = frame.control
         if control.single_picture_scene_end:
+            routes = control.candidate_addresses
+            route = routes[int(ControlInput.NO_INPUT)]
+            # A single-picture ending does not necessarily wait for input:
+            # DRAGON2's opening logo has only an onward no-input route.
+            # Keep interactive/timed waits unresolved, including button slots
+            # containing special values, and do not restart a self-reference.
+            has_button_data = any(
+                any(candidate.raw) for candidate in routes[:int(ControlInput.NO_INPUT)]
+            )
+            self_reference = self.segment.start_lba <= route.lba < self.segment.stop_lba
+            if not has_button_data and not self_reference:
+                if self._follow(route, ControlInput.NO_INPUT):
+                    return
             self.state = PlaybackState.HOLDING
             self.message = "Holding final picture"
             return

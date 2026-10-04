@@ -24,10 +24,11 @@ def sector(data, submode=Submodes.Data, channel=0, coding=0):
     return SimpleNamespace(Data=data, Submode=submode, Channel=channel, Coding=Codings(coding))
 
 
-def controlled_picture(flags, routes=()):
+def controlled_picture(flags, routes=(), *, second_byte=0):
     packet = bytearray(sectors(picture_bytes()))
     f2 = len(packet) - 2048
     packet[f2 + 1] = flags
+    packet[f2 + 2] = second_byte
     for input_value, target_lba, value in routes:
         absolute = target_lba + 150
         minutes, remainder = divmod(absolute, 4500)
@@ -224,6 +225,22 @@ class PlayerEngineTests(unittest.TestCase):
         self.assertEqual(engine.current_frame.lba, 8)
         self.assertEqual(len(engine.current_frame.decode_rgb()), 248 * 216 * 3)
 
+    def test_start_code_inside_f1_continuation_does_not_split_picture(self):
+        packet = controlled_picture(0x80)
+        # DRAGON2 LBA 6474 starts with these bytes inside the picture at 6470.
+        # The first 19 bits match a start code, but F2 still ends the packet.
+        continuation = b"\xF1\x00\x80\x0D" + bytes(2044)
+        stream = fake_stream([
+            sector(packet[:2048]),
+            sector(continuation),
+            sector(packet[2048:], Submodes.Data | Submodes.EOR),
+            sector(b"", Submodes.EOF),
+        ])
+        engine = PlaybackEngine(stream, 0)
+        self.assertEqual(engine.current_frame.lba, 0)
+        self.assertEqual(engine.current_frame.packet, packet[:2048] + continuation + packet[2048:])
+        self.assertEqual(engine.segment.stop_lba, 3)
+
     def test_multi_picture_end_auto_routes_and_single_picture_end_holds(self):
         engine = PlaybackEngine(self.make_stream(), 0)
         engine.advance(2 / 75)
@@ -232,6 +249,57 @@ class PlayerEngineTests(unittest.TestCase):
         engine.advance(2 / 75)
         self.assertEqual(engine.state, PlaybackState.HOLDING)
         self.assertEqual(engine.current_frame.lba, 5)
+
+    def test_single_picture_with_only_default_route_continues(self):
+        # DRAGON2 opens with 80 02, six empty button slots and an onward
+        # no-input route. The still cannot require a button to leave it.
+        first = controlled_picture(0x80, [
+            (ControlInput.NO_INPUT, 5, 0x2A),
+        ], second_byte=2)
+        stream = self.make_stream()
+        stream.Sectors[0].Data = first[:2048]
+        stream.Sectors[1].Data = first[2048:]
+        engine = PlaybackEngine(stream, 0)
+        engine.advance(1 / 75)
+        self.assertEqual(engine.segment.start_lba, 0)
+        engine.advance(1 / 75)
+        self.assertEqual(engine.state, PlaybackState.PLAYING)
+        self.assertEqual(engine.segment.start_lba, 5)
+        self.assertEqual(engine.last_transition.input, ControlInput.NO_INPUT)
+        self.assertEqual(engine.last_transition.value, 0x2A)
+
+    def test_single_picture_default_does_not_bypass_interactive_wait(self):
+        for button_target, value in ((5, 0), (-70, 0), (-150, 1)):
+            with self.subTest(button_target=button_target, value=value):
+                first = controlled_picture(0x80, [
+                    (ControlInput.A, button_target, value),
+                    (ControlInput.NO_INPUT, 5, 0),
+                ], second_byte=2)
+                stream = self.make_stream()
+                stream.Sectors[0].Data = first[:2048]
+                stream.Sectors[1].Data = first[2048:]
+                engine = PlaybackEngine(stream, 0)
+                engine.advance(10)
+                self.assertEqual(engine.state, PlaybackState.HOLDING)
+                self.assertEqual(engine.segment.start_lba, 0)
+                self.assertIsNone(engine.last_transition)
+                if button_target == 5:
+                    self.assertTrue(engine.press(ControlInput.A))
+                    self.assertEqual(engine.segment.start_lba, 5)
+
+    def test_single_picture_default_self_reference_or_invalid_target_holds(self):
+        for target in (0, -150, -70, 10):
+            with self.subTest(target=target):
+                first = controlled_picture(0x80, [(ControlInput.NO_INPUT, target, 0)])
+                stream = self.make_stream()
+                stream.Sectors[0].Data = first[:2048]
+                stream.Sectors[1].Data = first[2048:]
+                engine = PlaybackEngine(stream, 0)
+                generation = engine.generation
+                engine.advance(10)
+                self.assertEqual(engine.state, PlaybackState.HOLDING)
+                self.assertEqual(engine.generation, generation)
+                self.assertIsNone(engine.last_transition)
 
     def test_reader_keeps_a_two_second_rolling_horizon(self):
         packet = controlled_picture(0)
