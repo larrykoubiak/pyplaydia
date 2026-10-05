@@ -34,6 +34,21 @@ Cython is an optional build tool, not a requirement for running the source.
 
 ## Experimental interactive player
 
+For a graphical launcher, run:
+
+```sh
+./pyplaydia
+```
+
+Choose a CUE file and either start the interactive player or run one of the
+export and control-dump tools. The launcher is deliberately separate from the
+pygame window, leaving room for future launch options without changing the
+playback loop. The launcher script uses `venv`, then `.venv`, when either is
+present; otherwise it falls back to the system's `python3`.
+
+`main.py` remains the command-line entry point and displays its help when run
+without an action.
+
 Install the optional pygame frontend and open a disc:
 
 ```sh

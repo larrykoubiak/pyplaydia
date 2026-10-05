@@ -373,6 +373,55 @@ class PlayerCliTests(unittest.TestCase):
         self.assertEqual(error.exception.code, 2)
         self.assertIn("cannot be combined", output.getvalue())
 
+class LauncherTests(unittest.TestCase):
+    def test_launcher_selection_uses_existing_cli_path(self):
+        from launcher import main as launcher_main
+
+        with patch(
+            "launcher.choose_command",
+            return_value=["-c", "game.cue", "--play"],
+        ), patch("playdia_player.pygame_frontend.run_player", return_value=9) as run:
+            self.assertEqual(launcher_main(), 9)
+        run.assert_called_once_with("game.cue")
+
+    def test_cancelling_launcher_exits_cleanly(self):
+        from launcher import main as launcher_main
+
+        with patch("launcher.choose_command", return_value=None):
+            self.assertEqual(launcher_main(), 0)
+
+    def test_launcher_builds_playback_command(self):
+        from playdia_player.launcher import build_cli_args
+
+        self.assertEqual(
+            build_cli_args("game.cue"),
+            ["--cue_path", "game.cue", "--play"],
+        )
+
+    def test_launcher_builds_export_command(self):
+        from playdia_player.launcher import build_cli_args
+
+        self.assertEqual(
+            build_cli_args("game.cue", "video", "exports", 3),
+            [
+                "--cue_path",
+                "game.cue",
+                "--video",
+                "--destination",
+                "exports",
+                "--limit",
+                "3",
+            ],
+        )
+
+    def test_launcher_rejects_invalid_mode_and_limit(self):
+        from playdia_player.launcher import build_cli_args
+
+        with self.assertRaisesRegex(ValueError, "Unknown launcher mode"):
+            build_cli_args("game.cue", "unknown")
+        with self.assertRaisesRegex(ValueError, "zero or greater"):
+            build_cli_args("game.cue", limit=-1)
+
 
 if __name__ == "__main__":
     unittest.main()
