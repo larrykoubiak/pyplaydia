@@ -105,8 +105,9 @@ branches or establish exact console playback timing.
 Use `-l 1` to export only the first physical scene per disc file. Silent scenes
 still count toward the limit and keep their scene number. `-l 0` means no
 limit; negative limits are rejected. Always supply a CUE path with `-c` and
-choose an output mode: `-v`, `-f`, `-a`, or `--controls` (these can be combined). Running
-without an output mode displays help.
+choose an output mode: `-v`, `-f`, `-a`, `--audio-timeline`,
+`--media-timeline`, or `--controls` (these can be combined). Running without
+an output mode displays help.
 
 ## Export WAV audio
 
@@ -119,6 +120,40 @@ as AVI export. Both use the same 4-bit XA decoder and select the first audio
 channel encountered in each scene. WAV files contain uncompressed 16-bit PCM
 at the native 18,900 or 37,800 Hz rate, preserving mono/stereo; the old
 44.1 kHz resampling has been removed. Silent scenes produce no WAV file.
+
+For transcription or subtitle timing, export one physical disc timeline:
+
+```sh
+venv/bin/python main.py -c 'input/game.cue' --audio-timeline -d output
+```
+
+This writes `output/audio/disc_timeline.wav` as 37,800 Hz stereo PCM and
+`disc_timeline.json` with its origin LBA/CD MSF, format, selected XA channel
+intervals and any buffered-packet alignment adjustments. The WAV begins at
+the first selected audio sector and preserves later physical gaps as silence.
+At this rate one 1/75-second disc sector is exactly 504 sample frames, so a
+transcription timestamp maps back to the disc with
+`origin_lba + round(seconds * 75)` when the JSON reports zero overlap events.
+If buffered packets overlap their nominal positions, use the interval mappings
+recorded in the JSON. As with `-a`, the first XA channel in each physical scene
+is selected. The result follows physical disc order rather than any one
+interactive route.
+
+To create a file that can be opened directly in a subtitle editor, include
+the physical video timeline as well:
+
+```sh
+venv/bin/python main.py -c 'input/game.cue' --media-timeline -d output
+```
+
+This writes `output/media/disc_timeline.avi` with lossless MPNG pictures and
+37,800 Hz stereo PCM, plus `disc_timeline.json`. It uses the same channel
+selection, silence insertion and buffered-packet adjustment rules as the WAV
+timeline. Pictures appear at their physical LBA and are held until the next
+picture. The 75 Hz AVI clock exactly matches CD sectors, while empty hold-frame
+chunks avoid storing duplicate PNG images. No FFmpeg installation is required
+to create the AVI. The classic AVI format has a 4 GiB limit; export stops with
+an explicit error instead of producing a corrupt oversized file.
 
 ## Export PNGs directly from a disc
 

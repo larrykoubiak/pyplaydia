@@ -16,6 +16,8 @@ LAUNCH_MODES = {
     "play": LaunchMode("Play interactively", "--play"),
     "video": LaunchMode("Export video (AVI)", "--video", True, True),
     "audio": LaunchMode("Export audio (WAV)", "--audio", True, True),
+    "audio_timeline": LaunchMode("Export audio timeline (WAV + JSON)", "--audio-timeline", True),
+    "media_timeline": LaunchMode("Export subtitle timeline (AVI + JSON)", "--media-timeline", True),
     "frames": LaunchMode("Export frames (PNG)", "--frame", True, True),
     "controls": LaunchMode("Dump control sectors", "--controls", True),
 }

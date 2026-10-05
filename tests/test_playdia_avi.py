@@ -3,6 +3,7 @@
 from contextlib import redirect_stderr, redirect_stdout
 from hashlib import sha256
 import io
+import json
 from pathlib import Path
 from struct import pack, unpack, unpack_from
 import tempfile
@@ -201,6 +202,96 @@ class SceneExportTests(unittest.TestCase):
 
 
 class WavExportTests(unittest.TestCase):
+    def test_disc_media_timeline_embeds_sector_timed_video_and_audio(self):
+        packet = sectors(picture_bytes())
+        audio = bytes(2304)
+        track = [
+            sector(packet[:2048]),
+            sector(packet[2048:], Submodes.Data | Submodes.EOR),
+            sector(audio, Submodes.Audio, channel=2, coding=1),
+            sector(bytes(2048)),
+            sector(bytes(2048)),
+            sector(bytes(2048)),
+            sector(audio, Submodes.Audio, channel=2, coding=1),
+        ]
+        disc, _ = fake_disc(track)
+
+        with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            avi_path, json_path = disc.ReadMediaTimeline(directory)
+            streams, media = read_avi(avi_path)
+            self.assertEqual(len(streams), 2)
+            video = [payload for tag, payload, _ in media if tag == b"00dc"]
+            self.assertEqual(len(video), 10)
+            self.assertEqual([index for index, payload in enumerate(video) if payload], [0, 9])
+            pcm = b"".join(payload for tag, payload, _ in media if tag == b"01wb")
+            self.assertEqual(len(pcm), 10 * 504 * 4)
+
+            metadata = json.loads(Path(json_path).read_text())
+            self.assertEqual(metadata["origin_lba"], 0)
+            self.assertEqual(metadata["avi"], "disc_timeline.avi")
+            self.assertEqual(metadata["video_codec"], "MPNG")
+            self.assertEqual(metadata["video_frame_count"], 1)
+            self.assertEqual(metadata["video_ticks"], 10)
+            self.assertEqual(metadata["duration_frames"], 10 * 504)
+            self.assertEqual(metadata["timeline_duration_frames"], 10 * 504)
+
+    def test_disc_timeline_preserves_lba_gaps_and_writes_mapping(self):
+        audio = bytes(2304)
+        track = [sector(bytes(2048)) for _ in range(14)]
+        track[2] = sector(audio, Submodes.Audio, channel=2, coding=1)
+        track[6] = sector(audio, Submodes.Audio, channel=2, coding=1)
+        track[7] = sector(audio, Submodes.Audio, channel=3, coding=1)  # Alternate channel.
+        track[10] = sector(bytes(2048), Submodes.Data | Submodes.EOR)
+        track[12] = sector(audio, Submodes.Audio, channel=5, coding=5)
+        track[13] = sector(audio, Submodes.Audio, channel=6, coding=5)  # Alternate channel.
+        disc, _ = fake_disc(track)
+
+        with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            wav_path, json_path = disc.ReadAudioTimeline(directory)
+            with wave.open(wav_path, "rb") as wav:
+                self.assertEqual((wav.getnchannels(), wav.getsampwidth(), wav.getframerate()), (2, 2, 37800))
+                self.assertEqual(wav.getnframes(), 18 * 504)
+                pcm = wav.readframes(wav.getnframes())
+                self.assertEqual(pcm[8 * 504 * 4:10 * 504 * 4], bytes(2 * 504 * 4))
+
+            metadata = json.loads(Path(json_path).read_text())
+            self.assertEqual(metadata["origin_lba"], 2)
+            self.assertEqual(metadata["origin_cd_msf"], "00:02:02")
+            self.assertEqual(metadata["sample_frames_per_sector"], 504)
+            self.assertEqual(metadata["audio_sector_count"], 3)
+            self.assertEqual(metadata["duration_frames"], 18 * 504)
+            self.assertEqual(metadata["overlap_events"], 0)
+            self.assertEqual(
+                [(item["xa_channel"], item["source_sector_count"], item["wav_start_frame"], item["wav_end_frame"])
+                 for item in metadata["intervals"]],
+                [(2, 2, 0, 8 * 504), (5, 1, 10 * 504, 18 * 504)],
+            )
+
+    def test_disc_timeline_with_no_audio_writes_nothing(self):
+        disc, _ = fake_disc([sector(bytes(2048))])
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "audio"
+            self.assertIsNone(disc.ReadAudioTimeline(destination))
+            self.assertFalse(destination.exists())
+
+    def test_disc_timeline_records_buffered_packet_adjustments(self):
+        audio = bytes(2304)
+        track = [sector(bytes(2048)) for _ in range(8)]
+        for lba in (0, 3, 7):
+            track[lba] = sector(audio, Submodes.Audio, channel=2, coding=1)
+        disc, _ = fake_disc(track)
+
+        with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            _, json_path = disc.ReadAudioTimeline(directory)
+            metadata = json.loads(Path(json_path).read_text())
+            self.assertEqual(metadata["overlap_events"], 2)
+            self.assertEqual(metadata["max_alignment_adjustment_frames"], 504)
+            self.assertEqual(
+                [(item["source_start_lba"], item["source_sector_count"], item["timeline_adjustment_frames"])
+                 for item in metadata["intervals"]],
+                [(0, 1, 0), (3, 2, 504)],
+            )
+
     def test_scene_limit_numbering_stereo_and_eof_flush(self):
         audio = (bytes([12]) * 16 + bytes([0xF1, 0xE2, 0xD3, 0xC4]) * 28) * 18
         disc, _ = fake_disc([

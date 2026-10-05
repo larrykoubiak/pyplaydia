@@ -413,6 +413,26 @@ class LauncherTests(unittest.TestCase):
                 "3",
             ],
         )
+        self.assertEqual(
+            build_cli_args("game.cue", "audio_timeline", "exports", 3),
+            [
+                "--cue_path",
+                "game.cue",
+                "--audio-timeline",
+                "--destination",
+                "exports",
+            ],
+        )
+        self.assertEqual(
+            build_cli_args("game.cue", "media_timeline", "exports", 3),
+            [
+                "--cue_path",
+                "game.cue",
+                "--media-timeline",
+                "--destination",
+                "exports",
+            ],
+        )
 
     def test_launcher_rejects_invalid_mode_and_limit(self):
         from playdia_player.launcher import build_cli_args

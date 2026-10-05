@@ -2,14 +2,26 @@ import os
 from contextlib import ExitStack
 from datetime import datetime, timezone, timedelta
 from enum import Enum, Flag, auto
+import io
+import json
+import tempfile
 from filestream import Imagestream
 from sector import Submodes
 from playdia_codec.adpcm import XaAudioDecoder
 from playdia_codec import Picture
+from playdia_codec.avi import PngAviWriter
+from playdia_codec.codec import DecodeError
+from playdia_codec.pcm import OUTPUT_CHANNELS, OUTPUT_RATE, normalize_pcm
 from playdia_codec.video_export import export_scene
+from PIL import Image
 from struct import unpack
 from tqdm import tqdm
 import wave
+
+
+SECTORS_PER_SECOND = 75
+OUTPUT_FRAMES_PER_SECTOR = OUTPUT_RATE // SECTORS_PER_SECOND
+OUTPUT_FRAME_BYTES = OUTPUT_CHANNELS * 2
 
 
 class VolumeDescriptorType(Enum):
@@ -279,6 +291,258 @@ class ISOImage():
                     elif coding != decoder.coding:
                         raise ValueError("XA audio format changes within a scene")
                     wavefile.writeframesraw(decoder.decode_sector(sector.Data))
+
+    def ReadAudioTimeline(self, destination):
+        """Export selected XA audio on one physical, LBA-addressed timeline.
+
+        The WAV begins at the first selected audio sector. At 37.8 kHz, each
+        1/75-second disc sector is exactly 504 sample frames, so subsequent XA
+        packets can be placed using their physical LBA and gaps become silence.
+        As with the scene exporter, the first audio channel in each physical
+        scene is selected; audio EOR flags do not end a scene.
+        """
+        events = self.__timeline_audio_events()
+        if not events:
+            return None
+
+        os.makedirs(destination, exist_ok=True)
+        wav_path = os.path.join(destination, "disc_timeline.wav")
+        json_path = os.path.join(destination, "disc_timeline.json")
+        origin_lba = events[0][0]
+        with wave.open(wav_path, "wb") as wavefile, tqdm(
+            events, desc=os.path.basename(wav_path), unit="sector", leave=False
+        ) as audio_sectors:
+            wavefile.setparams((OUTPUT_CHANNELS, 2, OUTPUT_RATE, 0, "NONE", "not compressed"))
+            audio = self.__render_timeline_audio(events, origin_lba, wavefile.writeframesraw, audio_sectors)
+
+        metadata = self.__timeline_metadata(events, origin_lba, audio)
+        metadata["wav"] = os.path.basename(wav_path)
+        with open(json_path, "w", encoding="utf-8") as output:
+            json.dump(metadata, output, indent=2)
+            output.write("\n")
+        print(f"Wrote {wav_path} ({len(events)} XA audio sectors)")
+        print(f"Wrote {json_path} (origin LBA {origin_lba}, CD MSF {metadata['origin_cd_msf']})")
+        return wav_path, json_path
+
+    def ReadMediaTimeline(self, destination):
+        """Export one lossless MPNG/PCM AVI following the physical disc clock."""
+        events = self.__timeline_audio_events()
+        os.makedirs(destination, exist_ok=True)
+        avi_path = os.path.join(destination, "disc_timeline.avi")
+        json_path = os.path.join(destination, "disc_timeline.json")
+
+        with tempfile.TemporaryFile() as images, tempfile.TemporaryFile() as audio_file:
+            frames = self.__timeline_video_frames(images, avi_path)
+            if not frames and not events:
+                return None
+            first_video_lba = frames[0][0] if frames else events[0][0]
+            first_audio_lba = events[0][0] if events else first_video_lba
+            origin_lba = min(first_video_lba, first_audio_lba)
+            audio = self.__render_timeline_audio(events, origin_lba, audio_file.write)
+            audio_file.seek(0)
+
+            audio_ticks = (audio["duration_frames"] + OUTPUT_FRAMES_PER_SECTOR - 1) // OUTPUT_FRAMES_PER_SECTOR
+            video_ticks = frames[-1][0] - origin_lba + 1 if frames else 1
+            ticks = max(audio_ticks, video_ticks)
+            black = io.BytesIO()
+            Image.new("RGB", (Picture.width, Picture.height)).save(black, format="PNG")
+            current_png = black.getvalue()
+            last_reference = None
+            frame_index = 0
+
+            with PngAviWriter(
+                avi_path, Picture.width, Picture.height,
+                fps=SECTORS_PER_SECOND, sample_rate=OUTPUT_RATE, channels=OUTPUT_CHANNELS,
+            ) as avi, tqdm(range(ticks), desc=os.path.basename(avi_path), unit="sector", leave=False) as timeline:
+                for tick in timeline:
+                    changed = False
+                    while frame_index < len(frames) and frames[frame_index][0] - origin_lba <= tick:
+                        reference = frames[frame_index][1:]
+                        if reference != last_reference:
+                            offset, length = reference
+                            images.seek(offset)
+                            current_png = images.read(length)
+                            last_reference = reference
+                            changed = True
+                        frame_index += 1
+                    avi.write_video(current_png if changed or tick == 0 or tick == ticks - 1 else None)
+                    audio_end = min(audio["duration_frames"], (tick + 1) * OUTPUT_FRAMES_PER_SECTOR)
+                    samples = audio_end - avi.audio_samples
+                    avi.write_audio(audio_file.read(samples * OUTPUT_FRAME_BYTES))
+
+        metadata = self.__timeline_metadata(events, origin_lba, audio)
+        metadata.update({
+            "avi": os.path.basename(avi_path),
+            "video_codec": "MPNG",
+            "video_fps": SECTORS_PER_SECOND,
+            "video_frame_count": len(frames),
+            "video_ticks": ticks,
+            "timeline_duration_frames": ticks * OUTPUT_FRAMES_PER_SECTOR,
+        })
+        with open(json_path, "w", encoding="utf-8") as output:
+            json.dump(metadata, output, indent=2)
+            output.write("\n")
+        print(f"Wrote {avi_path} ({len(frames)} pictures, {len(events)} XA audio sectors)")
+        print(f"Wrote {json_path} (origin LBA {origin_lba}, CD MSF {metadata['origin_cd_msf']})")
+        return avi_path, json_path
+
+    def __timeline_audio_events(self):
+        events = []
+        scene = 0
+        audio_channel = None
+        for lba, header in enumerate(self.__imagestream.Sectors):
+            if header.Submode & Submodes.Audio:
+                if audio_channel is None:
+                    audio_channel = header.Channel
+                if header.Channel == audio_channel:
+                    events.append((lba, scene, header.Channel, header.Coding.value))
+            if header.Submode & Submodes.EOF:
+                scene += 1
+                audio_channel = None
+            elif not (header.Submode & Submodes.Audio) and header.Submode & Submodes.EOR:
+                scene += 1
+                audio_channel = None
+        return events
+
+    def __render_timeline_audio(self, events, origin_lba, write, progress=None):
+        cursor = 0
+        decoder = None
+        decoder_scene = None
+        intervals = []
+        overlap_events = 0
+        cumulative_adjustment = 0
+        max_adjustment = 0
+        source = progress if progress is not None else events
+        for lba, event_scene, channel, coding in source:
+            if event_scene != decoder_scene:
+                decoder = XaAudioDecoder(coding)
+                decoder_scene = event_scene
+            elif coding != decoder.coding:
+                raise ValueError("XA audio format changes within a scene")
+            pcm = normalize_pcm(
+                decoder.decode_sector(self.__imagestream.ReadSector(lba).Data),
+                decoder.sample_rate,
+                decoder.channels,
+            )
+            frames = len(pcm) // OUTPUT_FRAME_BYTES
+            nominal_start = (lba - origin_lba) * OUTPUT_FRAMES_PER_SECTOR
+            actual_start = max(cursor, nominal_start)
+            adjustment = actual_start - nominal_start
+            if adjustment:
+                overlap_events += 1
+                cumulative_adjustment += adjustment
+                max_adjustment = max(max_adjustment, adjustment)
+            self.__write_silence(write, actual_start - cursor)
+            write(pcm)
+            cursor = actual_start + frames
+
+            if (
+                intervals
+                and intervals[-1]["scene"] == event_scene
+                and intervals[-1]["xa_channel"] == channel
+                and intervals[-1]["xa_coding"] == coding
+                and intervals[-1]["timeline_adjustment_frames"] == adjustment
+                and intervals[-1]["wav_end_frame"] == actual_start
+            ):
+                interval = intervals[-1]
+                interval["source_last_lba"] = lba
+                interval["source_sector_count"] += 1
+                interval["wav_end_frame"] = cursor
+            else:
+                intervals.append({
+                    "scene": event_scene,
+                    "xa_channel": channel,
+                    "xa_coding": coding,
+                    "source_start_lba": lba,
+                    "source_last_lba": lba,
+                    "source_sector_count": 1,
+                    "wav_start_frame": actual_start,
+                    "wav_end_frame": cursor,
+                    "timeline_adjustment_frames": adjustment,
+                })
+        return {
+            "duration_frames": cursor,
+            "overlap_events": overlap_events,
+            "cumulative_alignment_adjustment_frames": cumulative_adjustment,
+            "max_alignment_adjustment_frames": max_adjustment,
+            "intervals": intervals,
+        }
+
+    def __timeline_video_frames(self, images, description):
+        frames = []
+        packet = bytearray()
+        packet_start = None
+        previous_packet = None
+        png_reference = None
+        with tqdm(
+            range(len(self.__imagestream.Sectors)), desc=os.path.basename(description),
+            unit="sector", leave=False,
+        ) as sectors:
+            for lba in sectors:
+                header = self.__imagestream.Sectors[lba]
+                if header.Submode & Submodes.Audio:
+                    continue
+                data = self.__imagestream.ReadSector(lba).Data
+                if data and data[0] == 0xF1:
+                    if packet:
+                        packet.extend(data[:2048])
+                    elif self.__starts_picture(data):
+                        packet_start = lba
+                        packet.extend(data[:2048])
+                elif data and data[0] == 0xF2 and packet:
+                    packet.extend(data[:2048])
+                    if packet != previous_packet:
+                        try:
+                            picture = Picture.from_bytes(packet)
+                        except DecodeError as exc:
+                            raise DecodeError(f"Sector {lba}: {exc}", bit=exc.bit, row=exc.row, block=exc.block) from exc
+                        offset = images.tell()
+                        picture.to_image().save(images, format="PNG")
+                        png_reference = (offset, images.tell() - offset)
+                        previous_packet = bytes(packet)
+                    frames.append((packet_start, *png_reference))
+                    packet.clear()
+                    packet_start = None
+        if packet:
+            raise DecodeError(f"Disc ends with an incomplete picture beginning at LBA {packet_start}")
+        return frames
+
+    @staticmethod
+    def __starts_picture(data):
+        if len(data) < 4 or data[0] != 0xF1:
+            return False
+        return int.from_bytes(data[1:4], "big") >> 5 == 0x400
+
+    def __timeline_metadata(self, events, origin_lba, audio):
+        return {
+            "schema_version": 1,
+            "sample_rate": OUTPUT_RATE,
+            "channels": OUTPUT_CHANNELS,
+            "sample_width_bytes": 2,
+            "sectors_per_second": SECTORS_PER_SECOND,
+            "sample_frames_per_sector": OUTPUT_FRAMES_PER_SECTOR,
+            "origin_lba": origin_lba,
+            "origin_cd_msf": self.__lba_to_msf(origin_lba),
+            "selection": "first XA channel encountered in each physical scene",
+            "audio_sector_count": len(events),
+            **audio,
+        }
+
+    @staticmethod
+    def __write_silence(write, frames):
+        chunk_frames = 262144
+        silence = bytes(chunk_frames * OUTPUT_FRAME_BYTES)
+        while frames:
+            count = min(frames, chunk_frames)
+            write(silence[:count * OUTPUT_FRAME_BYTES])
+            frames -= count
+
+    @staticmethod
+    def __lba_to_msf(lba):
+        absolute = lba + 150
+        minute, remainder = divmod(absolute, 60 * SECTORS_PER_SECOND)
+        second, frame = divmod(remainder, SECTORS_PER_SECOND)
+        return f"{minute:02}:{second:02}:{frame:02}"
 
     def __scene_ranges(self, record, limit):
         """Yield (scene number, start, stop); audio EOR does not end a scene."""

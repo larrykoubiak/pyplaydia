@@ -114,6 +114,24 @@ class CliTests(unittest.TestCase):
         context.__exit__.assert_called_once()
         self.assertIs(context.__exit__.call_args.args[0], ValueError)
 
+    def test_audio_timeline_is_exported_once_for_the_whole_disc(self):
+        context = MagicMock()
+        image = context.__enter__.return_value
+        with patch("main.ISOImage", return_value=context):
+            self.assertEqual(main(["-c", "game.cue", "--audio-timeline", "-d", "result"]), 0)
+        image.ReadAudioTimeline.assert_called_once_with("result/audio")
+        self.assertFalse(image.Files.__iter__.called)
+        context.__exit__.assert_called_once()
+
+    def test_media_timeline_is_exported_once_for_the_whole_disc(self):
+        context = MagicMock()
+        image = context.__enter__.return_value
+        with patch("main.ISOImage", return_value=context):
+            self.assertEqual(main(["-c", "game.cue", "--media-timeline", "-d", "result"]), 0)
+        image.ReadMediaTimeline.assert_called_once_with("result/media")
+        self.assertFalse(image.Files.__iter__.called)
+        context.__exit__.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

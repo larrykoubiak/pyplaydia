@@ -10,6 +10,8 @@ def main(argv=None):
     parser.add_argument("-d", "--destination", default="output", help="Destination folder")
     parser.add_argument("-l", "--limit", default=0, type=int, help="Limit media scenes per disc file (0=no limit; --controls always dumps all F2s)")
     parser.add_argument("-a", "--audio", action="store_true", help="Extract audio tracks (default=False)")
+    parser.add_argument("--audio-timeline", action="store_true", help="Export one LBA-aligned WAV and timestamp JSON for the disc")
+    parser.add_argument("--media-timeline", action="store_true", help="Export one LBA-aligned lossless AVI and timestamp JSON for the disc")
     parser.add_argument("-v", "--video", action="store_true", help="Export lossless PNG/PCM AVI clips (default=False)")
     parser.add_argument("-f", "--frame", action="store_true", help="Decode video frames to PNG (default=False)")
     parser.add_argument("--controls", action="store_true", help="Dump every F2 sector as raw BIN and byte CSV, without interpretation")
@@ -18,7 +20,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.limit < 0:
         parser.error("--limit must be zero or greater")
-    extraction_modes = args.audio or args.video or args.frame or args.controls
+    extraction_modes = args.audio or args.audio_timeline or args.media_timeline or args.video or args.frame or args.controls
     if args.play and extraction_modes:
         parser.error("--play cannot be combined with extraction modes")
     if not (extraction_modes or args.play):
@@ -42,18 +44,23 @@ def main(argv=None):
             output, count = dump_controls(stream, os.path.join(args.destination, "controls"))
         print(f"Wrote {output / 'f2.csv'} ({count} F2 records)")
         print(f"Wrote {output / 'f2_sectors.bin'} (complete raw sectors)")
-    if not (args.audio or args.video or args.frame):
+    if not (args.audio or args.audio_timeline or args.media_timeline or args.video or args.frame):
         return 0
 
     with ISOImage(args.cue_path) as image:
-        for record in image.Files:
-            print(record)
-            if args.audio:
-                image.ReadAudio(record, os.path.join(args.destination, "audio"), args.limit)
-            if args.video:
-                image.ReadVideo(record, os.path.join(args.destination, "video"), args.limit)
-            if args.frame:
-                image.ReadVideoFrames(record, os.path.join(args.destination, "frames"), args.limit)
+        if args.audio_timeline:
+            image.ReadAudioTimeline(os.path.join(args.destination, "audio"))
+        if args.media_timeline:
+            image.ReadMediaTimeline(os.path.join(args.destination, "media"))
+        if args.audio or args.video or args.frame:
+            for record in image.Files:
+                print(record)
+                if args.audio:
+                    image.ReadAudio(record, os.path.join(args.destination, "audio"), args.limit)
+                if args.video:
+                    image.ReadVideo(record, os.path.join(args.destination, "video"), args.limit)
+                if args.frame:
+                    image.ReadVideoFrames(record, os.path.join(args.destination, "frames"), args.limit)
     return 0
 
 
